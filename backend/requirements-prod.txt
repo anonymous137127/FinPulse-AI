@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pymongo
+dnspython
+python-jose
+passlib
+python-multipart
+python-dateutil
