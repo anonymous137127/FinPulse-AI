@@ -7,15 +7,13 @@ from passlib.context import CryptContext
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
-import joblib
 import os
 import hashlib
 import json
 
 from app.database import SessionLocal
 from app import models
-from app.mongodb import db
-from app.schemas import RegisterRequest
+from app.mongodb import db as mongo_db   # renamed to avoid conflict
 
 # ---------------- SECURITY ----------------
 
@@ -41,11 +39,11 @@ app.add_middleware(
 # ---------------- DATABASE ----------------
 
 def get_db():
-    db = SessionLocal()
+    database = SessionLocal()
     try:
-        yield db
+        yield database
     finally:
-        db.close()
+        database.close()
 
 # ---------------- AUTH ----------------
 
@@ -79,14 +77,17 @@ def require_role(roles: list):
 def home():
     return {"message": "FinPulse Backend Running 🚀"}
 
+# ---------------- MONGODB TEST ----------------
+
 @app.get("/mongo-test")
 def mongo_test():
 
-    data = {"message": "MongoDB working"}
-
-    db.test.insert_one(data)
-
-    return {"status": "MongoDB Insert Success"}
+    try:
+        data = {"message": "MongoDB working"}
+        mongo_db.test.insert_one(data)
+        return {"status": "MongoDB Insert Success"}
+    except Exception as e:
+        return {"error": str(e)}
 
 # ---------------- REGISTER ----------------
 
@@ -123,7 +124,7 @@ def register(
     db.commit()
     db.refresh(new_user)
 
-    return {"message": "User registered"}
+    return {"message": "User registered successfully"}
 
 # ---------------- LOGIN ----------------
 
@@ -166,18 +167,24 @@ def upload_csv(
     if not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="CSV only")
 
-    df = pd.read_csv(file.file)
+    try:
+        df = pd.read_csv(file.file)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid CSV file")
 
     rows = []
 
     for _, row in df.iterrows():
 
-        rows.append(
-            models.FinancialData(
-                revenue=float(row[0]),
-                expense=float(row[1])
+        try:
+            rows.append(
+                models.FinancialData(
+                    revenue=float(row[0]),
+                    expense=float(row[1])
+                )
             )
-        )
+        except:
+            continue
 
     db.bulk_save_objects(rows)
     db.commit()
@@ -226,7 +233,6 @@ def hash_financial_data(
         })
 
     dataset_string = json.dumps(dataset, sort_keys=True)
-
     dataset_hash = hashlib.sha256(dataset_string.encode()).hexdigest()
 
     return {
