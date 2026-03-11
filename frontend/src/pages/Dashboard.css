@@ -1,0 +1,254 @@
+/* ========================= */
+/* GLOBAL */
+/* ========================= */
+
+.dashboard{
+display:flex;
+font-family:"Segoe UI", Tahoma, sans-serif;
+background:#0f172a;
+color:white;
+min-height:100vh;
+}
+
+
+/* ========================= */
+/* SIDEBAR */
+/* ========================= */
+
+.sidebar{
+width:240px;
+background:#020617;
+color:white;
+padding:25px;
+border-right:1px solid #1e293b;
+display:flex;
+flex-direction:column;
+}
+
+.sidebar h2{
+margin-bottom:30px;
+color:#38bdf8;
+letter-spacing:1px;
+font-size:24px;
+}
+
+
+/* LOGOUT BUTTON */
+
+.sidebar button{
+padding:10px 14px;
+border:none;
+background:#ef4444;
+color:white;
+cursor:pointer;
+border-radius:8px;
+transition:0.3s;
+margin-bottom:30px;
+font-weight:600;
+}
+
+.sidebar button:hover{
+background:#dc2626;
+transform:scale(1.05);
+}
+
+
+/* ========================= */
+/* SIDEBAR SECURITY BOXES */
+/* ========================= */
+
+.sidebar-security{
+display:flex;
+flex-direction:column;
+gap:15px;
+}
+
+.sidebar .security-card{
+background:#020617;
+padding:15px;
+border-radius:10px;
+border:1px solid #1e293b;
+box-shadow:0 0 12px rgba(56,189,248,0.25);
+transition:0.3s;
+}
+
+.sidebar .security-card:hover{
+box-shadow:0 0 20px rgba(56,189,248,0.5);
+}
+
+.sidebar .security-card h3{
+font-size:14px;
+color:#38bdf8;
+margin-bottom:5px;
+}
+
+.sidebar .security-card p{
+font-size:14px;
+color:#22c55e;
+font-weight:bold;
+}
+
+
+/* ========================= */
+/* MAIN AREA */
+/* ========================= */
+
+.main{
+flex:1;
+padding:40px;
+background:#0f172a;
+}
+
+.main h1{
+color:#38bdf8;
+margin-bottom:30px;
+}
+
+
+/* ========================= */
+/* CSV UPLOAD */
+/* ========================= */
+
+.upload-box{
+background:#020617;
+padding:25px;
+margin-bottom:30px;
+border-radius:12px;
+border:1px solid #1e293b;
+box-shadow:0 0 15px rgba(56,189,248,0.15);
+transition:0.3s;
+}
+
+.upload-box:hover{
+box-shadow:0 0 25px rgba(56,189,248,0.35);
+}
+
+.upload-box h3{
+margin-bottom:10px;
+}
+
+
+/* ========================= */
+/* KPI CARDS */
+/* ========================= */
+
+.kpi-container{
+display:flex;
+gap:20px;
+margin-bottom:35px;
+flex-wrap:wrap;
+}
+
+.kpi-card{
+background:#020617;
+padding:25px;
+border-radius:12px;
+border:1px solid #1e293b;
+width:220px;
+text-align:center;
+box-shadow:0 0 15px rgba(0,0,0,0.4);
+transition:0.3s;
+}
+
+.kpi-card:hover{
+transform:translateY(-6px);
+box-shadow:0 0 25px rgba(56,189,248,0.6);
+}
+
+.kpi-card h3{
+color:#94a3b8;
+margin-bottom:10px;
+}
+
+.kpi-card p{
+font-size:22px;
+color:#38bdf8;
+font-weight:bold;
+}
+
+
+/* ========================= */
+/* CHART AREA */
+/* ========================= */
+
+.chart-row{
+display:flex;
+gap:25px;
+margin-bottom:30px;
+flex-wrap:wrap;
+}
+
+.chart-card{
+background:#020617;
+padding:25px;
+border-radius:12px;
+border:1px solid #1e293b;
+box-shadow:0 0 12px rgba(56,189,248,0.15);
+transition:0.3s;
+}
+
+.chart-card:hover{
+box-shadow:0 0 30px rgba(56,189,248,0.5);
+transform:scale(1.01);
+}
+
+.chart-card h3{
+color:#38bdf8;
+margin-bottom:15px;
+}
+
+
+/* ========================= */
+/* TEXT */
+/* ========================= */
+
+.main p{
+color:#cbd5f5;
+margin-top:10px;
+}
+
+
+/* ========================= */
+/* SCROLLBAR */
+/* ========================= */
+
+::-webkit-scrollbar{
+width:8px;
+}
+
+::-webkit-scrollbar-thumb{
+background:#38bdf8;
+border-radius:10px;
+}
+
+::-webkit-scrollbar-track{
+background:#020617;
+}
+
+
+/* ========================= */
+/* RECHARTS TOOLTIP STYLE */
+/* ========================= */
+
+.recharts-tooltip-wrapper{
+outline:none;
+}
+
+.recharts-default-tooltip{
+background:#020617 !important;
+border:1px solid #38bdf8 !important;
+border-radius:10px !important;
+box-shadow:0 0 12px rgba(56,189,248,0.4);
+padding:10px !important;
+}
+
+.recharts-tooltip-label{
+color:#38bdf8 !important;
+font-weight:bold;
+margin-bottom:4px;
+}
+
+.recharts-tooltip-item{
+color:#22c55e !important;
+font-weight:bold;
+}
