@@ -2,54 +2,22 @@ from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
-from app import models
 from jose import jwt
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 import pandas as pd
-import os
-from app.spark_utils import get_spark_session
-from sklearn.linear_model import LinearRegression
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import r2_score
-from sklearn.ensemble import IsolationForest
 import numpy as np
 import joblib
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import LabelEncoder
-from xgboost import XGBClassifier
-from sklearn.metrics import accuracy_score
+import os
 import hashlib
 import json
-from app.blockchain import Blockchain
-from datetime import datetime
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi import UploadFile, File
-import pandas as pd
-from sqlalchemy import func
-from datetime import datetime
-from dateutil.relativedelta import relativedelta
-from fastapi import HTTPException, Depends
-from sqlalchemy.orm import Session
-from pydantic import BaseModel
-import hashlib
-from passlib.context import CryptContext
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pyspark.sql import SparkSession
-from app.schemas import RegisterRequest
-from fastapi import Body
-from app.schemas import RegisterRequest
-import hashlib
+
+from app.database import SessionLocal
+from app import models
 from app.mongodb import db
+from app.schemas import RegisterRequest
 
-pwd_context = CryptContext(
-    schemes=["bcrypt"],
-    deprecated="auto"
-)
-
-# ---------------- JWT CONFIG ----------------
+# ---------------- SECURITY ----------------
 
 SECRET_KEY = "my_super_secret_key_123"
 ALGORITHM = "HS256"
@@ -58,17 +26,18 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
 
-# ---------------- FASTAPI APP ----------------
+# ---------------- FASTAPI ----------------
 
 app = FastAPI(title="FinPulse API 🚀")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 # ---------------- DATABASE ----------------
 
 def get_db():
@@ -91,32 +60,29 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
         payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
         return payload
     except:
-        raise HTTPException(status_code=401, detail="Invalid token ❌")
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 def require_role(roles: list):
+
     def role_checker(user: dict = Depends(verify_token)):
 
         if user.get("role") not in roles:
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied ❌"
-            )
+            raise HTTPException(status_code=403, detail="Access denied")
 
         return user
 
     return role_checker
-# ---------------- BASIC ROUTES ----------------
+
+# ---------------- BASIC ----------------
 
 @app.get("/")
 def home():
-    return {"message": "Backend Running Successfully 🚀"}
-
-from app.mongodb import db
+    return {"message": "FinPulse Backend Running 🚀"}
 
 @app.get("/mongo-test")
 def mongo_test():
 
-    data = {"message": "MongoDB working 🚀"}
+    data = {"message": "MongoDB working"}
 
     db.test.insert_one(data)
 
@@ -132,52 +98,24 @@ def register(
     db: Session = Depends(get_db)
 ):
 
-    # Clean inputs
     username = username.strip()
     password = password.strip()
 
-    # Validate role
     if role not in ["admin", "analyst", "auditor"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid role ❌"
-        )
+        raise HTTPException(status_code=400, detail="Invalid role")
 
-    # Validate username
-    if len(username) < 3:
-        raise HTTPException(
-            status_code=400,
-            detail="Username must be at least 3 characters"
-        )
-
-    # Validate password length (bcrypt limit = 72 bytes)
-    if len(password) < 4:
-        raise HTTPException(
-            status_code=400,
-            detail="Password must be at least 4 characters"
-        )
-
-    if len(password) > 72:
-        password = password[:72]  # truncate for bcrypt safety
-
-    # Check if user exists
-    existing_user = db.query(models.User).filter(
+    existing = db.query(models.User).filter(
         models.User.username == username
     ).first()
 
-    if existing_user:
-        raise HTTPException(
-            status_code=400,
-            detail="Username already exists ❌"
-        )
+    if existing:
+        raise HTTPException(status_code=400, detail="Username exists")
 
-    # Hash password
-    hashed_password = pwd_context.hash(password)
+    hashed = pwd_context.hash(password)
 
-    # Create user
     new_user = models.User(
         username=username,
-        password=hashed_password,
+        password=hashed,
         role=role
     )
 
@@ -185,11 +123,7 @@ def register(
     db.commit()
     db.refresh(new_user)
 
-    return {
-        "message": "User registered successfully ✅",
-        "username": username,
-        "role": role
-    }
+    return {"message": "User registered"}
 
 # ---------------- LOGIN ----------------
 
@@ -200,42 +134,28 @@ def login(
     db: Session = Depends(get_db)
 ):
 
-    # Clean input
-    username = username.strip()
-    password = password.strip()
-
-    # Find user
     user = db.query(models.User).filter(
         models.User.username == username
     ).first()
 
     if not user:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid username or password ❌"
-        )
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    # Verify bcrypt password
     if not pwd_context.verify(password, user.password):
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid username or password ❌"
-        )
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    # Create JWT token
     token = create_access_token({
         "sub": user.username,
         "role": user.role
     })
 
     return {
-        "message": "Login successful ✅",
         "access_token": token,
-        "token_type": "bearer",
-        "username": user.username,
-        "role": user.role
+        "token_type": "bearer"
     }
-# ---------------- UNIVERSAL CSV ETL ----------------
+
+# ---------------- CSV UPLOAD ----------------
+
 @app.post("/upload-csv")
 def upload_csv(
     file: UploadFile = File(...),
@@ -243,615 +163,50 @@ def upload_csv(
     db: Session = Depends(get_db)
 ):
 
-    if not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Only CSV files allowed ❌")
+    if not file.filename.endswith(".csv"):
+        raise HTTPException(status_code=400, detail="CSV only")
 
-    current_user = db.query(models.User).filter(
-        models.User.username == user["sub"]
-    ).first()
+    df = pd.read_csv(file.file)
 
-    if not current_user:
-        raise HTTPException(status_code=404, detail="User not found ❌")
+    rows = []
 
-    # delete previous user data
-    db.query(models.FinancialData).filter(
-        models.FinancialData.user_id == current_user.id
-    ).delete()
+    for _, row in df.iterrows():
 
-    db.commit()
-
-    rows_inserted = 0
-
-    try:
-
-        df = pd.read_csv(file.file)
-
-        # clean column names
-        df.columns = df.columns.str.strip().str.lower()
-
-        # remove currency symbols
-        df = df.replace(r'[\$,]', '', regex=True)
-
-        # detect numeric columns automatically
-        numeric_cols = []
-
-        for col in df.columns:
-            converted = pd.to_numeric(df[col], errors="coerce")
-
-            # if column has numeric values keep it
-            if converted.notna().sum() > 0:
-                df[col] = converted
-                numeric_cols.append(col)
-
-        if len(numeric_cols) < 2:
-            raise HTTPException(
-                status_code=400,
-                detail="Dataset must contain at least 2 numeric columns"
+        rows.append(
+            models.FinancialData(
+                revenue=float(row[0]),
+                expense=float(row[1])
             )
-
-        revenue_col = numeric_cols[0]
-        expense_col = numeric_cols[1]
-
-        records = []
-
-        for _, row in df.iterrows():
-
-            revenue = row[revenue_col]
-            expense = row[expense_col]
-
-            if pd.isna(revenue) or pd.isna(expense):
-                continue
-
-            records.append(
-                models.FinancialData(
-                    user_id=current_user.id,
-                    revenue=float(revenue),
-                    expense=float(expense)
-                )
-            )
-
-        if records:
-            db.bulk_save_objects(records)
-            db.commit()
-
-        rows_inserted = len(records)
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"CSV processing error: {str(e)}"
         )
 
-    return {
-        "message": "CSV uploaded successfully ✅",
-        "rows_inserted": rows_inserted
-    }
-# ---------------- SPARK (LIGHT VERSION) ----------------
-
-@app.post("/upload-csv-spark")
-def upload_csv_spark(file: UploadFile = File(...),
-                     user: dict = Depends(require_role(["admin","analyst","auditor"]))):
-
-    spark = get_spark_session()
-
-    temp_path = f"temp_{file.filename}"
-    with open(temp_path, "wb") as f:
-        f.write(file.file.read())
-
-    df = spark.read.csv(temp_path, header=True, inferSchema=True)
-
-    for col in df.columns:
-        df = df.withColumnRenamed(col, col.strip().lower())
-
-    row_count = df.count()
-    columns = df.columns
-
-    os.remove(temp_path)
-
-    return {
-        "message": "Spark processed successfully ✅",
-        "columns": columns,
-        "row_count": row_count
-    }
-
-# ---------------- REVENUE FORECAST ----------------
-@app.get("/forecast-revenue")
-def forecast_revenue(
-    user: dict = Depends(require_role(["admin","analyst","auditor"])),
-    db: Session = Depends(get_db)
-):
-
-    # Get current logged-in user
-    current_user = db.query(models.User).filter(
-        models.User.username == user["sub"]
-    ).first()
-
-    if not current_user:
-        raise HTTPException(status_code=404, detail="User not found ❌")
-
-    # Get only this user's financial data
-    data = db.query(models.FinancialData).filter(
-        models.FinancialData.user_id == current_user.id
-    ).all()
-
-    # If dataset is small → return safe result
-    if len(data) < 5:
-        return {
-            "next_month_prediction": 0,
-            "model_accuracy_r2": 0,
-            "months_used_for_training": []
-        }
-
-    revenues = []
-
-    for row in data:
-        try:
-            revenues.append(float(row.revenue))
-        except:
-            continue
-
-    if len(revenues) < 5:
-        return {
-            "next_month_prediction": 0,
-            "model_accuracy_r2": 0,
-            "months_used_for_training": revenues
-        }
-
-    # ---------------- GROUP DATA INTO 6 MONTHS ----------------
-    chunk_size = max(1, len(revenues) // 6)
-
-    monthly_totals = []
-
-    for i in range(6):
-        start = i * chunk_size
-        end = start + chunk_size
-        monthly_totals.append(sum(revenues[start:end]))
-
-    monthly_totals = np.array(monthly_totals)
-
-    # ---------------- TRAIN MODEL ----------------
-    X = np.arange(len(monthly_totals)).reshape(-1, 1)
-    y = monthly_totals
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, shuffle=False
-    )
-
-    model = LinearRegression()
-    model.fit(X_train, y_train)
-
-    # ---------------- MODEL EVALUATION ----------------
-    y_pred = model.predict(X_test)
-    accuracy = r2_score(y_test, y_pred)
-
-    # ---------------- NEXT MONTH PREDICTION ----------------
-    next_index = np.array([[len(monthly_totals)]])
-    prediction = model.predict(next_index)[0]
-
-    # Save model
-    joblib.dump(model, "revenue_model.pkl")
-
-    # Store prediction in DB
-    db.add(
-        models.RevenuePrediction(
-            predicted_value=str(round(prediction, 2)),
-            created_at=str(datetime.utcnow())
-        )
-    )
-
+    db.bulk_save_objects(rows)
     db.commit()
 
     return {
-        "next_month_prediction": round(float(prediction), 2),
-        "model_accuracy_r2": round(float(accuracy), 4),
-        "months_used_for_training": monthly_totals.tolist()
+        "message": "CSV uploaded",
+        "rows": len(rows)
     }
 
-# ---------------- ANOMALY DETECTION ----------------
-@app.get("/detect-anomalies")
-def detect_anomalies(
+# ---------------- KPI ----------------
+
+@app.get("/kpis")
+def get_kpis(
     user: dict = Depends(require_role(["admin","analyst","auditor"])),
     db: Session = Depends(get_db)
 ):
 
-    # 🔹 Get current logged-in user
-    current_user = db.query(models.User).filter(
-        models.User.username == user["sub"]
-    ).first()
+    data = db.query(models.FinancialData).all()
 
-    if not current_user:
-        raise HTTPException(status_code=404, detail="User not found ❌")
-
-    # 🔹 Load only this user's financial data
-    data = db.query(models.FinancialData).filter(
-        models.FinancialData.user_id == current_user.id
-    ).all()
-
-    # 🔹 If user has no data
-    if not data:
-        return {
-            "message": "No financial data uploaded yet",
-            "total_records": 0,
-            "anomalies_found": 0,
-            "results": []
-        }
-
-    # 🔹 Need minimum data for anomaly detection
-    if len(data) < 10:
-        return {
-            "message": "Upload more data for anomaly detection",
-            "total_records": len(data),
-            "anomalies_found": 0,
-            "results": []
-        }
-
-    revenues = np.array([float(d.revenue) for d in data]).reshape(-1, 1)
-
-    model = IsolationForest(contamination=0.1, random_state=42)
-    model.fit(revenues)
-
-    predictions = model.predict(revenues)
-    scores = model.decision_function(revenues)
-
-    results = []
-
-    for i, record in enumerate(data):
-
-        risk = "High Risk 🚨" if predictions[i] == -1 else "Normal"
-
-        record.risk_level = risk
-
-        results.append({
-            "id": record.id,
-            "revenue": record.revenue,
-            "risk_level": risk,
-            "anomaly_score": round(float(scores[i]), 4)
-        })
-
-    db.commit()
+    total_revenue = sum(float(r.revenue) for r in data)
+    total_expense = sum(float(r.expense) for r in data)
 
     return {
-        "total_records": len(data),
-        "anomalies_found": int(sum(predictions == -1)),
-        "results": results
-    }
-# ---------------- RISK CLASSIFICATION ----------------
-
-@app.get("/classify-risk")
-def classify_risk(
-    user: dict = Depends(require_role(["admin","analyst","auditor"])),
-    db: Session = Depends(get_db)
-):
-
-    # 🔹 Get current logged-in user
-    current_user = db.query(models.User).filter(
-        models.User.username == user["sub"]
-    ).first()
-
-    if not current_user:
-        raise HTTPException(status_code=404, detail="User not found ❌")
-
-    # 🔹 Load only this user's financial data
-    data = db.query(models.FinancialData).filter(
-        models.FinancialData.user_id == current_user.id
-    ).all()
-
-    # 🔹 If no data
-    if not data:
-        return {
-            "message": "No financial data uploaded yet",
-            "total_records": 0,
-            "results": []
-        }
-
-    # 🔹 Need minimum records
-    if len(data) < 10:
-        return {
-            "message": "Need at least 10 records for classification",
-            "total_records": len(data),
-            "results": []
-        }
-
-    revenues = np.array([float(d.revenue) for d in data]).reshape(-1, 1)
-
-    # ---------- RULE-BASED LABELING ----------
-    labels = []
-
-    for value in revenues:
-        v = value[0]
-        if v < 1000:
-            labels.append("Low")
-        elif v < 5000:
-            labels.append("Medium")
-        else:
-            labels.append("High")
-
-    # Encode labels
-    encoder = LabelEncoder()
-    y = encoder.fit_transform(labels)
-
-    # Train classifier
-    model = LogisticRegression()
-    model.fit(revenues, y)
-
-    # Predict classification
-    predictions = model.predict(revenues)
-
-    results = []
-
-    for i, record in enumerate(data):
-
-        risk_label = encoder.inverse_transform([predictions[i]])[0]
-
-        record.risk_level = risk_label
-
-        results.append({
-            "id": record.id,
-            "revenue": record.revenue,
-            "classified_risk": risk_label
-        })
-
-    db.commit()
-
-    return {
-        "message": "Risk classification completed ✅",
-        "total_records": len(data),
-        "results": results
+        "total_revenue": total_revenue,
+        "total_expense": total_expense,
+        "net_profit": total_revenue - total_expense
     }
 
-# ---------------- XGBOOST RISK CLASSIFICATION ----------------
-
-@app.get("/classify-risk-xgb")
-def classify_risk_xgb(
-    user: dict = Depends(require_role(["admin","analyst","auditor"])),
-    db: Session = Depends(get_db)
-):
-
-    # 🔹 Get current logged-in user
-    current_user = db.query(models.User).filter(
-        models.User.username == user["sub"]
-    ).first()
-
-    if not current_user:
-        raise HTTPException(status_code=404, detail="User not found ❌")
-
-    # 🔹 Load only this user's financial data
-    data = db.query(models.FinancialData).filter(
-        models.FinancialData.user_id == current_user.id
-    ).all()
-
-    # 🔹 If no data
-    if not data:
-        return {
-            "message": "No financial data uploaded yet",
-            "total_records": 0,
-            "results": []
-        }
-
-    # 🔹 Minimum data required
-    if len(data) < 10:
-        return {
-            "message": "Need at least 10 records for XGBoost classification",
-            "total_records": len(data),
-            "results": []
-        }
-
-    # --------- Prepare Feature Matrix ----------
-    revenues = np.array([float(d.revenue) for d in data]).reshape(-1, 1)
-
-    # --------- Create Labels ----------
-    labels = []
-
-    for value in revenues:
-        val = value[0]
-
-        if val < 1000:
-            labels.append("Low")
-        elif val < 5000:
-            labels.append("Medium")
-        else:
-            labels.append("High")
-
-    # --------- Encode Labels ----------
-    encoder = LabelEncoder()
-    y = encoder.fit_transform(labels)
-
-    # --------- Train/Test Split ----------
-    X_train, X_test, y_train, y_test = train_test_split(
-        revenues, y, test_size=0.2, random_state=42
-    )
-
-    # --------- Train XGBoost ----------
-    model = XGBClassifier(
-        n_estimators=150,
-        max_depth=4,
-        learning_rate=0.1,
-        random_state=42,
-        eval_metric='mlogloss'
-    )
-
-    model.fit(X_train, y_train)
-
-    # --------- Evaluate Model ----------
-    y_pred = model.predict(X_test)
-    accuracy = accuracy_score(y_test, y_pred)
-
-    # --------- Save Model ----------
-    joblib.dump(model, "xgb_risk_model.pkl")
-    joblib.dump(encoder, "risk_label_encoder.pkl")
-
-    # --------- Predict For All Records ----------
-    all_predictions = model.predict(revenues)
-    probabilities = model.predict_proba(revenues)
-
-    results = []
-
-    for i, record in enumerate(data):
-
-        risk_label = encoder.inverse_transform([all_predictions[i]])[0]
-        confidence = round(float(max(probabilities[i]) * 100), 2)
-
-        record.risk_level = risk_label
-
-        results.append({
-            "id": record.id,
-            "revenue": record.revenue,
-            "classified_risk": risk_label,
-            "confidence_percent": confidence
-        })
-
-    db.commit()
-
-    return {
-        "message": "XGBoost risk classification completed ✅",
-        "model_accuracy": round(float(accuracy), 4),
-        "total_records": len(data),
-        "model_saved": True,
-        "results": results
-    }
-
-# ---------------- FORECAST API (MODEL LOAD) ----------------
-
-@app.get("/forecast")
-def forecast(
-    user: dict = Depends(require_role(["admin","analyst","auditor"])),
-    db: Session = Depends(get_db)
-):
-
-    # 🔹 Check if model exists
-    if not os.path.exists("revenue_model.pkl"):
-        raise HTTPException(
-            status_code=400,
-            detail="Forecast model not trained yet ❌"
-        )
-
-    model = joblib.load("revenue_model.pkl")
-
-    # 🔹 Get current logged‑in user
-    current_user = db.query(models.User).filter(
-        models.User.username == user["sub"]
-    ).first()
-
-    if not current_user:
-        raise HTTPException(status_code=404, detail="User not found ❌")
-
-    # 🔹 Load only this user's data
-    data = db.query(models.FinancialData).filter(
-        models.FinancialData.user_id == current_user.id
-    ).all()
-
-    # 🔹 If no data
-    if not data:
-        return {
-            "message": "No financial data uploaded yet",
-            "next_month_prediction": None
-        }
-
-    if len(data) < 3:
-        return {
-            "message": "Need at least 3 records for forecasting",
-            "next_month_prediction": None
-        }
-
-    next_index = np.array([[len(data)]])
-    prediction = model.predict(next_index)[0]
-
-    return {
-        "message": "Forecast generated successfully ✅",
-        "next_month_prediction": round(float(prediction), 2)
-    }
-
-@app.post("/detect-risk")
-def detect_risk(
-    revenue: float,
-    user: dict = Depends(require_role(["admin","analyst","auditor"]))
-):
-
-    if not os.path.exists("xgb_risk_model.pkl"):
-        raise HTTPException(
-            status_code=400,
-            detail="Risk model not trained yet ❌"
-        )
-
-    if not os.path.exists("risk_label_encoder.pkl"):
-        raise HTTPException(
-            status_code=400,
-            detail="Label encoder not found ❌"
-        )
-
-    model = joblib.load("xgb_risk_model.pkl")
-    encoder = joblib.load("risk_label_encoder.pkl")
-
-    input_data = np.array([[revenue]])
-
-    prediction = model.predict(input_data)[0]
-    risk = encoder.inverse_transform([prediction])[0]
-
-    return {
-        "message": "Risk prediction successful ✅",
-        "revenue": revenue,
-        "predicted_risk": risk
-    }
-
-# ---------------- HASH ML RESULTS ----------------
-@app.get("/hash-ml-results")
-def hash_ml_results(
-    user: dict = Depends(require_role(["admin","analyst","auditor"])),
-    db: Session = Depends(get_db)
-):
-
-    # 🔹 Get current logged-in user
-    current_user = db.query(models.User).filter(
-        models.User.username == user["sub"]
-    ).first()
-
-    if not current_user:
-        raise HTTPException(status_code=404, detail="User not found ❌")
-
-    # 🔹 Load only this user's financial data
-    data = db.query(models.FinancialData).filter(
-        models.FinancialData.user_id == current_user.id
-    ).all()
-
-    # 🔹 If no data
-    if not data:
-        return {
-            "sha256_hash": None,
-            "total_records": 0,
-            "high_risk": 0,
-            "normal": 0
-        }
-
-    results = []
-    high = 0
-    normal = 0
-
-    for record in data:
-
-        risk = getattr(record, "risk_level", "Normal")
-
-        if "High" in risk:
-            high += 1
-        else:
-            normal += 1
-
-        results.append({
-            "id": record.id,
-            "risk_level": risk
-        })
-
-    results_string = json.dumps(results, sort_keys=True)
-    result_hash = hashlib.sha256(results_string.encode()).hexdigest()
-
-    return {
-        "sha256_hash": result_hash,
-        "total_records": len(results),
-        "high_risk": high,
-        "normal": normal
-    }
-
-
-# ---------------- HASH FINANCIAL DATA ----------------
+# ---------------- HASH DATA ----------------
 
 @app.get("/hash-financial-data")
 def hash_financial_data(
@@ -859,26 +214,7 @@ def hash_financial_data(
     db: Session = Depends(get_db)
 ):
 
-    # 🔹 Get current logged-in user
-    current_user = db.query(models.User).filter(
-        models.User.username == user["sub"]
-    ).first()
-
-    if not current_user:
-        raise HTTPException(status_code=404, detail="User not found ❌")
-
-    # 🔹 Load only this user's financial data
-    data = db.query(models.FinancialData).filter(
-        models.FinancialData.user_id == current_user.id
-    ).all()
-
-    # 🔹 If no data
-    if not data:
-        return {
-            "message": "No financial data uploaded yet",
-            "sha256_hash": None,
-            "total_records": 0
-        }
+    data = db.query(models.FinancialData).all()
 
     dataset = []
 
@@ -890,604 +226,16 @@ def hash_financial_data(
         })
 
     dataset_string = json.dumps(dataset, sort_keys=True)
+
     dataset_hash = hashlib.sha256(dataset_string.encode()).hexdigest()
 
     return {
-        "message": "Dataset hashed successfully ✅",
         "sha256_hash": dataset_hash,
         "total_records": len(dataset)
     }
 
-# ---------------- BLOCKCHAIN SYSTEM ----------------
-class Blockchain:
-
-    def __init__(self):
-        self.chain = []
-        self.create_genesis_block()
-
-    # ---------------- HASH FUNCTION ----------------
-    def calculate_hash(self, index, timestamp, data, previous_hash):
-
-        block_string = json.dumps({
-            "index": index,
-            "timestamp": timestamp,
-            "data": data,
-            "previous_hash": previous_hash
-        }, sort_keys=True)
-
-        return hashlib.sha256(block_string.encode()).hexdigest()
-
-    # ---------------- GENESIS BLOCK ----------------
-    def create_genesis_block(self):
-
-        genesis_block = {
-            "index": 0,
-            "timestamp": str(datetime.utcnow()),
-            "data": "Genesis Block",
-            "previous_hash": "0"
-        }
-
-        genesis_block["current_hash"] = self.calculate_hash(
-            genesis_block["index"],
-            genesis_block["timestamp"],
-            genesis_block["data"],
-            genesis_block["previous_hash"]
-        )
-
-        self.chain.append(genesis_block)
-
-    # ---------------- ADD BLOCK ----------------
-    def add_block(self, data):
-
-        previous_block = self.chain[-1]
-
-        new_block = {
-            "index": len(self.chain),
-            "timestamp": str(datetime.utcnow()),
-            "data": data,
-            "previous_hash": previous_block["current_hash"]
-        }
-
-        new_block["current_hash"] = self.calculate_hash(
-            new_block["index"],
-            new_block["timestamp"],
-            new_block["data"],
-            new_block["previous_hash"]
-        )
-
-        self.chain.append(new_block)
-
-        return new_block
-
-    # ---------------- INTEGRITY CHECK ----------------
-    def is_chain_valid(self):
-
-        for i in range(1, len(self.chain)):
-
-            current = self.chain[i]
-            previous = self.chain[i - 1]
-
-            recalculated_hash = self.calculate_hash(
-                current["index"],
-                current["timestamp"],
-                current["data"],
-                current["previous_hash"]
-            )
-
-            if current["current_hash"] != recalculated_hash:
-                return False
-
-            if current["previous_hash"] != previous["current_hash"]:
-                return False
-
-        return True
-
-
-# 🔥 Initialize Blockchain (ONLY ONCE)
-blockchain = Blockchain()
-
-# ---------------- LOAD BLOCKCHAIN FROM DB ----------------
-def load_blockchain_from_db(db: Session):
-
-    blocks = db.query(models.BlockchainBlock)\
-               .order_by(models.BlockchainBlock.block_index)\
-               .all()
-
-    blockchain.chain = []
-
-    # 🔥 If DB is empty → create Genesis block
-    if not blocks:
-        blockchain.create_genesis_block()
-        return
-
-    # Otherwise load from DB
-    for block in blocks:
-        blockchain.chain.append({
-            "index": block.block_index,
-            "timestamp": block.timestamp,
-            "data": json.loads(block.data),
-            "previous_hash": block.previous_hash,
-            "current_hash": block.current_hash
-        })
-
-# ---------------- STARTUP EVENT ----------------
-@app.on_event("startup")
-def startup_event():
-    db = SessionLocal()
-    load_blockchain_from_db(db)
-    db.close()
-
-# ---------------- ADD BLOCK API ----------------
-
-@app.post("/add-block")
-def add_block(
-    user: dict = Depends(require_role(["admin","analyst","auditor"])),
-    db: Session = Depends(get_db)
-):
-
-    # 🔹 Get current logged-in user
-    current_user = db.query(models.User).filter(
-        models.User.username == user["sub"]
-    ).first()
-
-    if not current_user:
-        raise HTTPException(status_code=404, detail="User not found ❌")
-
-    # 🔹 Load only this user's financial data
-    data = db.query(models.FinancialData).filter(
-        models.FinancialData.user_id == current_user.id
-    ).all()
-
-    if not data:
-        return {
-            "message": "No financial data uploaded yet",
-            "block_created": False
-        }
-
-    dataset = []
-
-    for record in data:
-        dataset.append({
-            "id": record.id,
-            "revenue": record.revenue,
-            "expense": record.expense,
-            "risk_level": getattr(record, "risk_level", "Normal")
-        })
-
-    new_block = blockchain.add_block(dataset)
-
-    return {
-        "message": "Block added successfully ✅",
-        "block_index": new_block["index"],
-        "timestamp": new_block["timestamp"],
-        "previous_hash": new_block["previous_hash"],
-        "current_hash": new_block["current_hash"]
-    }
-
-# ---------------- VIEW CHAIN ----------------
-
-@app.get("/view-chain")
-def view_chain(user: dict = Depends(require_role(["admin","analyst","auditor"]))):
-
-    return {
-        "length": len(blockchain.chain),
-        "is_valid": blockchain.is_chain_valid(),
-        "chain": blockchain.chain
-    }
-
-# ---------------- VERIFY INTEGRITY ----------------
-
-@app.get("/verify-integrity")
-def verify_integrity(user: dict = Depends(require_role(["admin","analyst","auditor"]))):
-
-    if blockchain.is_chain_valid():
-        return {
-            "status": "Valid ✅",
-            "message": "Blockchain integrity verified successfully"
-        }
-    else:
-        return {
-            "status": "Tampered ❌",
-            "message": "Blockchain has been modified"
-        }
-# =========================================
-# BLOCKCHAIN BLOCK CREATION
-# =========================================
-
-@app.post("/add-block")
-def add_block(
-    user: dict = Depends(require_role("admin")),
-    db: Session = Depends(get_db)
-):
-
-    data = db.query(models.FinancialData).all()
-
-    if not data:
-        raise HTTPException(status_code=404,
-                            detail="No financial data found ❌")
-
-    dataset = []
-
-    for record in data:
-        dataset.append({
-            "id": record.id,
-            "revenue": record.revenue,
-            "expense": record.expense,
-            "risk_level": getattr(record, "risk_level", "Normal")
-        })
-
-    new_block = blockchain.add_block(dataset)
-
-    db_block = models.BlockchainBlock(
-        block_index=new_block["index"],
-        timestamp=new_block["timestamp"],
-        data=json.dumps(new_block["data"]),
-        previous_hash=new_block["previous_hash"],
-        current_hash=new_block["current_hash"]
-    )
-
-    db.add(db_block)
-    db.commit()
-
-    return {
-        "message": "Block added & stored in DB successfully ✅",
-        "block_index": new_block["index"],
-        "current_hash": new_block["current_hash"]
-    }
-
-
-# =========================================
-# LOAD BLOCKCHAIN AT STARTUP
-# =========================================
-
-@app.on_event("startup")
-def startup_event():
-    db = SessionLocal()
-    load_blockchain_from_db(db)
-    db.close()
-
-
-# =========================================
-# KPI API
-# =========================================
-
-@app.get("/kpis")
-def get_kpis(
-    user: dict = Depends(require_role(["admin","analyst","auditor"])),
-    db: Session = Depends(get_db)
-):
-
-    current_user = db.query(models.User).filter(
-        models.User.username == user["sub"]
-    ).first()
-
-    if not current_user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    data = db.query(models.FinancialData).filter(
-        models.FinancialData.user_id == current_user.id
-    ).all()
-
-    total_revenue = 0
-    total_expense = 0
-
-    for row in data:
-
-        try:
-            total_revenue += float(row.revenue)
-        except:
-            pass
-
-        try:
-            total_expense += float(row.expense)
-        except:
-            pass
-
-    return {
-        "total_revenue": total_revenue,
-        "total_expense": total_expense,
-        "net_profit": total_revenue - total_expense
-    }
-
-
-# =========================================
-# REVENUE FORECAST
-# =========================================
-
-@app.get("/revenue-forecast")
-def revenue_forecast(
-    user: dict = Depends(require_role(["admin","analyst","auditor"])),
-    db: Session = Depends(get_db)
-):
-
-    current_user = db.query(models.User).filter(
-        models.User.username == user["sub"]
-    ).first()
-
-    if not current_user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    data = db.query(models.FinancialData).filter(
-        models.FinancialData.user_id == current_user.id
-    ).all()
-
-    if not data:
-        return []
-
-    today = datetime.today()
-    months = []
-
-    for i in range(5, -1, -1):
-        month = today - relativedelta(months=i)
-        months.append(month.strftime("%b"))
-
-    revenues = []
-
-    for row in data:
-        try:
-            revenues.append(float(row.revenue))
-        except:
-            continue
-
-    if not revenues:
-        return []
-
-    chunk_size = max(1, len(revenues) // 6)
-
-    forecast = []
-
-    for i, month in enumerate(months):
-
-        start = i * chunk_size
-        end = start + chunk_size
-
-        revenue_sum = sum(revenues[start:end])
-
-        forecast.append({
-            "month": month,
-            "revenue": round(revenue_sum, 2)
-        })
-
-    return forecast
-
-# =========================================
-# CHART DATA
-# =========================================
-
-@app.get("/chart-data")
-def chart_data(
-    user: dict = Depends(require_role(["admin","analyst","auditor"])),
-    db: Session = Depends(get_db)
-):
-    ...
-    return result
-
-
-# =========================================
-# HELPER FUNCTIONS (NO Depends here)
-# =========================================
-
-def get_kpis_data(user, db):
-
-    current_user = db.query(models.User).filter(
-        models.User.username == user["sub"]
-    ).first()
-
-    data = db.query(models.FinancialData).filter(
-        models.FinancialData.user_id == current_user.id
-    ).all()
-
-    total_revenue = sum(float(r.revenue) for r in data)
-    total_expense = sum(float(r.expense) for r in data)
-
-    return {
-        "total_revenue": total_revenue,
-        "total_expense": total_expense,
-        "net_profit": total_revenue - total_expense
-    }
-
-
-def get_revenue_forecast_data(user, db):
-
-    current_user = db.query(models.User).filter(
-        models.User.username == user["sub"]
-    ).first()
-
-    data = db.query(models.FinancialData).filter(
-        models.FinancialData.user_id == current_user.id
-    ).all()
-
-    if not data:
-        return []
-
-    today = datetime.today()
-
-    months = [
-        (today - relativedelta(months=i)).strftime("%b")
-        for i in range(5, -1, -1)
-    ]
-
-    revenues = [float(r.revenue) for r in data]
-
-    chunk_size = max(1, len(revenues)//6)
-
-    forecast = []
-
-    for i, m in enumerate(months):
-
-        start = i * chunk_size
-        end = start + chunk_size
-
-        forecast.append({
-            "month": m,
-            "revenue": sum(revenues[start:end])
-        })
-
-    return forecast
-
-
-def get_chart_data(user, db):
-
-    current_user = db.query(models.User).filter(
-        models.User.username == user["sub"]
-    ).first()
-
-    data = db.query(models.FinancialData).filter(
-        models.FinancialData.user_id == current_user.id
-    ).all()
-
-    today = datetime.today()
-
-    months = [
-        (today - relativedelta(months=i)).strftime("%b")
-        for i in range(5, -1, -1)
-    ]
-
-    revenues = [float(r.revenue) for r in data]
-    expenses = [float(r.expense) for r in data]
-
-    chunk_size = max(1, len(revenues)//6)
-
-    result = []
-
-    for i, m in enumerate(months):
-
-        start = i * chunk_size
-        end = start + chunk_size
-
-        result.append({
-            "month": m,
-            "revenue": sum(revenues[start:end]),
-            "expense": sum(expenses[start:end])
-        })
-
-    return result
-
-# =========================================
-# HELPER FUNCTIONS (NO Depends here)
-# =========================================
-
-def get_kpis_data(user, db):
-
-    current_user = db.query(models.User).filter(
-        models.User.username == user["sub"]
-    ).first()
-
-    data = db.query(models.FinancialData).filter(
-        models.FinancialData.user_id == current_user.id
-    ).all()
-
-    total_revenue = sum(float(r.revenue) for r in data)
-    total_expense = sum(float(r.expense) for r in data)
-
-    return {
-        "total_revenue": total_revenue,
-        "total_expense": total_expense,
-        "net_profit": total_revenue - total_expense
-    }
-
-
-def get_revenue_forecast_data(user, db):
-
-    current_user = db.query(models.User).filter(
-        models.User.username == user["sub"]
-    ).first()
-
-    data = db.query(models.FinancialData).filter(
-        models.FinancialData.user_id == current_user.id
-    ).all()
-
-    if not data:
-        return []
-
-    today = datetime.today()
-
-    months = [
-        (today - relativedelta(months=i)).strftime("%b")
-        for i in range(5, -1, -1)
-    ]
-
-    revenues = [float(r.revenue) for r in data]
-
-    chunk_size = max(1, len(revenues)//6)
-
-    forecast = []
-
-    for i, m in enumerate(months):
-
-        start = i * chunk_size
-        end = start + chunk_size
-
-        forecast.append({
-            "month": m,
-            "revenue": sum(revenues[start:end])
-        })
-
-    return forecast
-
-
-def get_chart_data(user, db):
-
-    current_user = db.query(models.User).filter(
-        models.User.username == user["sub"]
-    ).first()
-
-    data = db.query(models.FinancialData).filter(
-        models.FinancialData.user_id == current_user.id
-    ).all()
-
-    today = datetime.today()
-
-    months = [
-        (today - relativedelta(months=i)).strftime("%b")
-        for i in range(5, -1, -1)
-    ]
-
-    revenues = [float(r.revenue) for r in data]
-    expenses = [float(r.expense) for r in data]
-
-    chunk_size = max(1, len(revenues)//6)
-
-    result = []
-
-    for i, m in enumerate(months):
-
-        start = i * chunk_size
-        end = start + chunk_size
-
-        result.append({
-            "month": m,
-            "revenue": sum(revenues[start:end]),
-            "expense": sum(expenses[start:end])
-        })
-
-    return result
-@app.get("/dashboard-data")
-def get_dashboard_data(
-    user: dict = Depends(require_role(["admin","analyst","auditor"])),
-    db: Session = Depends(get_db)
-):
-
-    kpis = get_kpis_data(user, db)
-
-    forecast = get_revenue_forecast_data(user, db)
-
-    chart = get_chart_data(user, db)
-
-    prediction = forecast_revenue(user, db)
-
-    anomaly = classify_risk_xgb(user, db)
-
-    risk_records = hash_ml_results(user, db)
-
-    blockchain = verify_integrity(user)
-
-    return {
-        "kpis": kpis,
-        "forecast": forecast,
-        "prediction": prediction,
-        "chart": chart,
-        "anomaly": anomaly,
-        "risk_records": risk_records,
-        "blockchain": blockchain
-    }
+# ---------------- HEALTH CHECK ----------------
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
