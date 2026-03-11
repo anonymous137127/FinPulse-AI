@@ -1,19 +1,19 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.orm import Session
 from jose import jwt
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 import pandas as pd
-import numpy as np
-import os
 import hashlib
 import json
 
+# Optional imports from your project
 from app.database import SessionLocal
 from app import models
-from app.mongodb import db as mongo_db   # renamed to avoid conflict
+from app.mongodb import db as mongo_db
+
+from sqlalchemy.orm import Session
 
 # ---------------- SECURITY ----------------
 
@@ -39,26 +39,34 @@ app.add_middleware(
 # ---------------- DATABASE ----------------
 
 def get_db():
-    database = SessionLocal()
+    db = SessionLocal()
     try:
-        yield database
+        yield db
     finally:
-        database.close()
+        db.close()
 
 # ---------------- AUTH ----------------
 
 def create_access_token(data: dict):
     to_encode = data.copy()
     expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+
     to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+    token = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+    return token
+
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+
     try:
         payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
         return payload
+
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
+
 
 def require_role(roles: list):
 
@@ -71,22 +79,32 @@ def require_role(roles: list):
 
     return role_checker
 
-# ---------------- BASIC ----------------
+# ---------------- BASIC ROUTES ----------------
 
 @app.get("/")
 def home():
     return {"message": "FinPulse Backend Running 🚀"}
 
-# ---------------- MONGODB TEST ----------------
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+# ---------------- MONGO TEST ----------------
 
 @app.get("/mongo-test")
 def mongo_test():
 
     try:
+
         data = {"message": "MongoDB working"}
+
         mongo_db.test.insert_one(data)
+
         return {"status": "MongoDB Insert Success"}
+
     except Exception as e:
+
         return {"error": str(e)}
 
 # ---------------- REGISTER ----------------
@@ -105,18 +123,18 @@ def register(
     if role not in ["admin", "analyst", "auditor"]:
         raise HTTPException(status_code=400, detail="Invalid role")
 
-    existing = db.query(models.User).filter(
+    existing_user = db.query(models.User).filter(
         models.User.username == username
     ).first()
 
-    if existing:
-        raise HTTPException(status_code=400, detail="Username exists")
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Username already exists")
 
-    hashed = pwd_context.hash(password)
+    hashed_password = pwd_context.hash(password)
 
     new_user = models.User(
         username=username,
-        password=hashed,
+        password=hashed_password,
         role=role
     )
 
@@ -124,7 +142,11 @@ def register(
     db.commit()
     db.refresh(new_user)
 
-    return {"message": "User registered successfully"}
+    return {
+        "message": "User registered successfully",
+        "username": username,
+        "role": role
+    }
 
 # ---------------- LOGIN ----------------
 
@@ -140,10 +162,10 @@ def login(
     ).first()
 
     if not user:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=401, detail="Invalid username or password")
 
     if not pwd_context.verify(password, user.password):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=401, detail="Invalid username or password")
 
     token = create_access_token({
         "sub": user.username,
@@ -160,16 +182,19 @@ def login(
 @app.post("/upload-csv")
 def upload_csv(
     file: UploadFile = File(...),
-    user: dict = Depends(require_role(["admin","analyst","auditor"])),
+    user: dict = Depends(require_role(["admin", "analyst", "auditor"])),
     db: Session = Depends(get_db)
 ):
 
     if not file.filename.endswith(".csv"):
-        raise HTTPException(status_code=400, detail="CSV only")
+        raise HTTPException(status_code=400, detail="Only CSV files allowed")
 
     try:
+
         df = pd.read_csv(file.file)
-    except:
+
+    except Exception:
+
         raise HTTPException(status_code=400, detail="Invalid CSV file")
 
     rows = []
@@ -177,12 +202,14 @@ def upload_csv(
     for _, row in df.iterrows():
 
         try:
+
             rows.append(
                 models.FinancialData(
                     revenue=float(row[0]),
                     expense=float(row[1])
                 )
             )
+
         except:
             continue
 
@@ -190,15 +217,15 @@ def upload_csv(
     db.commit()
 
     return {
-        "message": "CSV uploaded",
-        "rows": len(rows)
+        "message": "CSV uploaded successfully",
+        "rows_inserted": len(rows)
     }
 
 # ---------------- KPI ----------------
 
 @app.get("/kpis")
 def get_kpis(
-    user: dict = Depends(require_role(["admin","analyst","auditor"])),
+    user: dict = Depends(require_role(["admin", "analyst", "auditor"])),
     db: Session = Depends(get_db)
 ):
 
@@ -226,6 +253,7 @@ def hash_financial_data(
     dataset = []
 
     for record in data:
+
         dataset.append({
             "id": record.id,
             "revenue": record.revenue,
@@ -233,15 +261,10 @@ def hash_financial_data(
         })
 
     dataset_string = json.dumps(dataset, sort_keys=True)
+
     dataset_hash = hashlib.sha256(dataset_string.encode()).hexdigest()
 
     return {
         "sha256_hash": dataset_hash,
         "total_records": len(dataset)
     }
-
-# ---------------- HEALTH CHECK ----------------
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
