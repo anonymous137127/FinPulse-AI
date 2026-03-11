@@ -2,7 +2,9 @@ fastapi
 uvicorn
 pymongo
 dnspython
-python-jose
-passlib
+python-jose[cryptography]
+passlib[bcrypt]
+pandas
+numpy
 python-multipart
 python-dateutil
