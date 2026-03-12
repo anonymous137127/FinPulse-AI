@@ -1,9 +1,9 @@
 fastapi
 uvicorn
 pymongo
-dnspython
 python-jose
 passlib[bcrypt]
+bcrypt==4.0.1
 pandas
 numpy
 scikit-learn
