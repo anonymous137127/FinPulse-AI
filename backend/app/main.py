@@ -286,21 +286,24 @@ def upload_csv(
         "message": "CSV uploaded successfully ✅",
         "rows_inserted": rows_inserted
     }
-
 # ---------------- SPARK (LIGHT VERSION) ----------------
 
 @app.post("/upload-csv-spark")
-def upload_csv_spark(file: UploadFile = File(...),
-    user: dict = Depends(require_role(["admin","analyst","auditor"]))):
+def upload_csv_spark(
+    file: UploadFile = File(...),
+    user: dict = Depends(require_role(["admin","analyst","auditor"]))
+):
 
     spark = get_spark_session()
 
     temp_path = f"temp_{file.filename}"
+
     with open(temp_path, "wb") as f:
         f.write(file.file.read())
 
     df = spark.read.csv(temp_path, header=True, inferSchema=True)
 
+    # clean column names
     for col in df.columns:
         df = df.withColumnRenamed(col, col.strip().lower())
 
@@ -315,27 +318,27 @@ def upload_csv_spark(file: UploadFile = File(...),
         "row_count": row_count
     }
 
+
 # ---------------- REVENUE FORECAST ----------------
+
 @app.get("/forecast-revenue")
 def forecast_revenue(
-    user: dict = Depends(require_role(["admin","analyst","auditor"])),
-    db: Session = Depends(get_db)
+    user: dict = Depends(require_role(["admin","analyst","auditor"]))
 ):
 
-    # Get current logged-in user
-    current_user = db.query(models.User).filter(
-        models.User.username == user["sub"]
-    ).first()
+    # get logged in user from MongoDB
+    current_user = users_collection.find_one({"username": user["sub"]})
 
     if not current_user:
         raise HTTPException(status_code=404, detail="User not found ❌")
 
-    # Get only this user's financial data
-    data = db.query(models.FinancialData).filter(
-        models.FinancialData.user_id == current_user.id
-    ).all()
+    # get user's financial data
+    data = list(
+        financial_collection.find(
+            {"user_id": str(current_user["_id"])}
+        )
+    )
 
-    # If dataset is small → return safe result
     if len(data) < 5:
         return {
             "next_month_prediction": 0,
@@ -347,7 +350,7 @@ def forecast_revenue(
 
     for row in data:
         try:
-            revenues.append(float(row.revenue))
+            revenues.append(float(row["revenue"]))
         except:
             continue
 
@@ -358,7 +361,8 @@ def forecast_revenue(
             "months_used_for_training": revenues
         }
 
-    # ---------------- GROUP DATA INTO 6 MONTHS ----------------
+    # ---------------- GROUP INTO 6 MONTHS ----------------
+
     chunk_size = max(1, len(revenues) // 6)
 
     monthly_totals = []
@@ -371,6 +375,7 @@ def forecast_revenue(
     monthly_totals = np.array(monthly_totals)
 
     # ---------------- TRAIN MODEL ----------------
+
     X = np.arange(len(monthly_totals)).reshape(-1, 1)
     y = monthly_totals
 
@@ -381,26 +386,27 @@ def forecast_revenue(
     model = LinearRegression()
     model.fit(X_train, y_train)
 
-    # ---------------- MODEL EVALUATION ----------------
+    # ---------------- EVALUATE ----------------
+
     y_pred = model.predict(X_test)
     accuracy = r2_score(y_test, y_pred)
 
-    # ---------------- NEXT MONTH PREDICTION ----------------
+    # ---------------- PREDICT NEXT MONTH ----------------
+
     next_index = np.array([[len(monthly_totals)]])
     prediction = model.predict(next_index)[0]
 
-    # Save model
+    # save model
     joblib.dump(model, "revenue_model.pkl")
 
-    # Store prediction in DB
-    db.add(
-        models.RevenuePrediction(
-            predicted_value=str(round(prediction, 2)),
-            created_at=str(datetime.utcnow())
-        )
-    )
-
-    db.commit()
+    # store prediction in MongoDB
+    financial_collection.insert_one({
+        "type": "forecast_result",
+        "user_id": str(current_user["_id"]),
+        "prediction": float(round(prediction, 2)),
+        "accuracy": float(round(accuracy, 4)),
+        "created_at": datetime.utcnow()
+    })
 
     return {
         "next_month_prediction": round(float(prediction), 2),
