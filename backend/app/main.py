@@ -257,7 +257,7 @@ def login(username: str, password: str):
         "username": user["username"],
         "role": user["role"]
     }
-# ---------------- UNIVERSAL FINANCIAL CSV ETL ----------------
+# ---------------- UNIVERSAL CSV ETL (MongoDB Version) ----------------
 
 @app.post("/upload-csv")
 def upload_csv(
@@ -268,12 +268,13 @@ def upload_csv(
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only CSV files allowed ❌")
 
+    # get current user from MongoDB
     current_user = users_collection.find_one({"username": user["sub"]})
 
     if not current_user:
         raise HTTPException(status_code=404, detail="User not found ❌")
 
-    # remove previous user data
+    # delete previous user data
     financial_collection.delete_many({
         "user_id": str(current_user["_id"])
     })
@@ -284,82 +285,47 @@ def upload_csv(
 
         df = pd.read_csv(file.file)
 
-        # normalize column names
+        # clean column names
         df.columns = df.columns.str.strip().str.lower()
 
         # remove currency symbols
         df = df.replace(r'[\$,₹]', '', regex=True)
 
-        # -----------------------------------
-        # SMART COLUMN DETECTION
-        # -----------------------------------
-
-        revenue_keywords = [
-            "revenue","income","sales","turnover",
-            "profit","earnings","gdp","amount","value"
-        ]
-
-        expense_keywords = [
-            "expense","cost","loss","spending",
-            "expenditure","debit","withdrawal"
-        ]
-
-        revenue_col = None
-        expense_col = None
+        # detect numeric columns automatically
+        numeric_cols = []
 
         for col in df.columns:
 
-            if any(key in col for key in revenue_keywords):
-                revenue_col = col
+            converted = pd.to_numeric(df[col], errors="coerce")
 
-            if any(key in col for key in expense_keywords):
-                expense_col = col
+            if converted.notna().sum() > 0:
+                df[col] = converted
+                numeric_cols.append(col)
 
-        # fallback: detect numeric columns
-        if revenue_col is None or expense_col is None:
-
-            numeric_cols = []
-
-            for col in df.columns:
-
-                converted = pd.to_numeric(df[col], errors="coerce")
-
-                if converted.notna().sum() > 0:
-                    df[col] = converted
-                    numeric_cols.append(col)
-
-            if len(numeric_cols) >= 2:
-                revenue_col = numeric_cols[0]
-                expense_col = numeric_cols[1]
-
-        if revenue_col is None or expense_col is None:
-
+        if len(numeric_cols) < 2:
             raise HTTPException(
                 status_code=400,
-                detail="Unable to detect revenue & expense columns automatically"
+                detail="Dataset must contain at least 2 numeric columns"
             )
 
-        # -----------------------------------
-        # STORE DATA
-        # -----------------------------------
+        revenue_col = numeric_cols[0]
+        expense_col = numeric_cols[1]
 
         records = []
 
         for _, row in df.iterrows():
 
-            revenue = pd.to_numeric(row.get(revenue_col), errors="coerce")
-            expense = pd.to_numeric(row.get(expense_col), errors="coerce")
+            revenue = row.get(revenue_col)
+            expense = row.get(expense_col)
 
             if pd.isna(revenue) or pd.isna(expense):
                 continue
 
             records.append({
-
                 "user_id": str(current_user["_id"]),
                 "revenue": float(revenue),
                 "expense": float(expense),
                 "created_at": datetime.utcnow()
-
             })
 
         if records:
@@ -375,10 +341,8 @@ def upload_csv(
         )
 
     return {
-        "message": "Financial dataset processed successfully ✅",
-        "rows_inserted": rows_inserted,
-        "detected_revenue_column": revenue_col,
-        "detected_expense_column": expense_col
+        "message": "CSV uploaded successfully ✅",
+        "rows_inserted": rows_inserted
     }
 
 # ---------------- REVENUE FORECAST ----------------
