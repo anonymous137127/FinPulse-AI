@@ -625,20 +625,18 @@ def classify_risk(
         "total_records": len(data),
         "results": results
     }
-# ---------------- XGBOOST RISK CLASSIFICATION ----------------
+# ---------------- RISK + FRAUD DETECTION ----------------
 
 @app.get("/classify-risk-xgb")
 def classify_risk_xgb(
     user: dict = Depends(require_role(["admin","analyst","auditor"]))
 ):
 
-    # get logged-in user
     current_user = users_collection.find_one({"username": user["sub"]})
 
     if not current_user:
         raise HTTPException(status_code=404, detail="User not found ❌")
 
-    # get financial data
     data = list(
         financial_collection.find(
             {"user_id": str(current_user["_id"])}
@@ -654,25 +652,43 @@ def classify_risk_xgb(
 
     if len(data) < 10:
         return {
-            "message": "Need at least 10 records for XGBoost classification",
+            "message": "Need at least 10 records for analysis",
             "total_records": len(data),
             "results": []
         }
 
-    revenues = np.array(
-        [float(d["revenue"]) for d in data]
-    ).reshape(-1, 1)
+    # ---------------- PREPARE FEATURES ----------------
 
-    # --------- create labels ----------
+    revenues = []
+    expenses = []
+
+    for d in data:
+
+        rev = float(d.get("revenue",0))
+        exp = float(d.get("expense",0))
+
+        revenues.append(rev)
+        expenses.append(exp)
+
+    revenues = np.array(revenues)
+    expenses = np.array(expenses)
+
+    profit = revenues - expenses
+
+    X = np.column_stack((revenues, expenses, profit))
+
+    # ---------------- RISK LABEL CREATION ----------------
+
     labels = []
 
-    for value in revenues:
-        v = value[0]
+    for p in profit:
 
-        if v < 1000:
+        if p < 500:
             labels.append("Low")
-        elif v < 5000:
+
+        elif p < 3000:
             labels.append("Medium")
+
         else:
             labels.append("High")
 
@@ -680,55 +696,94 @@ def classify_risk_xgb(
     y = encoder.fit_transform(labels)
 
     X_train, X_test, y_train, y_test = train_test_split(
-        revenues, y, test_size=0.2, random_state=42
+        X, y, test_size=0.2, random_state=42
     )
 
+    # ---------------- XGBOOST MODEL ----------------
+
     model = XGBClassifier(
-        n_estimators=150,
+        n_estimators=120,
         max_depth=4,
         learning_rate=0.1,
         random_state=42,
-        eval_metric='mlogloss'
+        eval_metric="mlogloss"
     )
 
     model.fit(X_train, y_train)
 
     y_pred = model.predict(X_test)
+
     accuracy = accuracy_score(y_test, y_pred)
 
-    # save model
-    joblib.dump(model, "xgb_risk_model.pkl")
-    joblib.dump(encoder, "risk_label_encoder.pkl")
+    # ---------------- FRAUD DETECTION ----------------
 
-    all_predictions = model.predict(revenues)
-    probabilities = model.predict_proba(revenues)
+    anomaly_model = IsolationForest(
+        contamination=0.05,
+        random_state=42
+    )
+
+    anomaly_model.fit(X)
+
+    anomaly_predictions = anomaly_model.predict(X)
+
+    # -1 = anomaly
+    #  1 = normal
+
+    # ---------------- FINAL RESULTS ----------------
+
+    predictions = model.predict(X)
+    probabilities = model.predict_proba(X)
 
     results = []
 
     for i, record in enumerate(data):
 
-        risk_label = encoder.inverse_transform([all_predictions[i]])[0]
-        confidence = round(float(max(probabilities[i]) * 100), 2)
+        risk_label = encoder.inverse_transform([predictions[i]])[0]
+        confidence = round(float(max(probabilities[i]) * 100),2)
 
-        # update MongoDB
+        anomaly = anomaly_predictions[i]
+
+        if anomaly == -1:
+            fraud_status = "Suspicious Transaction"
+        else:
+            fraud_status = "Normal"
+
         financial_collection.update_one(
             {"_id": record["_id"]},
-            {"$set": {"risk_level": risk_label}}
+            {"$set": {
+                "risk_level": risk_label,
+                "fraud_flag": fraud_status
+            }}
         )
 
         results.append({
+
             "id": str(record["_id"]),
-            "revenue": record["revenue"],
+            "revenue": float(record.get("revenue",0)),
+            "expense": float(record.get("expense",0)),
+            "profit": float(profit[i]),
+
             "classified_risk": risk_label,
-            "confidence_percent": confidence
+            "confidence_percent": confidence,
+
+            "fraud_detection": fraud_status
+
         })
 
     return {
-        "message": "XGBoost risk classification completed ✅",
-        "model_accuracy": round(float(accuracy), 4),
+
+        "message": "Financial risk + fraud detection completed ✅",
+        "model_accuracy": round(float(accuracy),4),
         "total_records": len(data),
-        "model_saved": True,
+
+        "features_used": [
+            "revenue",
+            "expense",
+            "profit"
+        ],
+
         "results": results
+
     }
 # ---------------- FORECAST API ----------------
 
