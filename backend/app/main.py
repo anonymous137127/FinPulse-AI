@@ -30,7 +30,7 @@ from xgboost import XGBClassifier
 # Spark
 # ===============================
 
-from pyspark.sql import SparkSession
+from app.spark_utils import get_spark_session
 from app.spark_utils import get_spark_session
 
 # ===============================

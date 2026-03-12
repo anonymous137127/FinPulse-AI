@@ -6,9 +6,8 @@ python-jose
 passlib[bcrypt]
 pandas
 numpy
-python-multipart
-pydantic
 scikit-learn
 xgboost
 joblib
+python-multipart
 python-dateutil
