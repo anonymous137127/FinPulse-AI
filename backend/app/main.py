@@ -27,6 +27,9 @@ from xgboost import XGBClassifier
 # Blockchain
 
 from app.blockchain import Blockchain
+import hashlib
+import json
+from time import time
 
 # MongoDB
 
