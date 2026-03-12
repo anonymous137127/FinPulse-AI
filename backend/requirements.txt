@@ -10,11 +10,7 @@ python-multipart
 pydantic
 dnspython
 pymongo
-
 scikit-learn
 xgboost
 joblib
-
-pyspark
-
 python-dateutil
