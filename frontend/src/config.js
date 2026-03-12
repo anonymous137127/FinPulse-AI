@@ -1,0 +1,1 @@
+export const API_BASE = "https://finpulse-ai-1.onrender.com";

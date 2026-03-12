@@ -15,9 +15,7 @@ import os
 import json
 import hashlib
 
-# ===============================
 # Machine Learning
-# ===============================
 
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.model_selection import train_test_split
@@ -26,15 +24,11 @@ from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier
 
-# ===============================
 # Blockchain
-# ===============================
 
 from app.blockchain import Blockchain
 
-# ===============================
 # MongoDB
-# ===============================
 
 from app.mongodb import (
     db,
@@ -43,24 +37,20 @@ from app.mongodb import (
     blockchain_collection
 )
 
-# ===============================
 # Schemas
-# ===============================
 
 from app.schemas import RegisterRequest
 
-# ===============================
 # PASSWORD HASHING
-# ===============================
+
 
 pwd_context = CryptContext(
     schemes=["bcrypt"],
     deprecated="auto"
 )
 
-# ===============================
 # JWT CONFIG
-# ===============================
+
 
 SECRET_KEY = "my_super_secret_key_123"
 ALGORITHM = "HS256"
@@ -74,9 +64,7 @@ security = HTTPBearer()
 
 app = FastAPI(title="FinPulse API 🚀")
 
-# ===============================
 # CORS
-# ===============================
 
 app.add_middleware(
     CORSMiddleware,
@@ -86,9 +74,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ===============================
 # AUTH FUNCTIONS
-# ===============================
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -123,10 +109,7 @@ def require_role(roles: list):
 
     return role_checker
 
-
-# ===============================
 # BASIC ROUTE
-# ===============================
 
 @app.get("/")
 def home():
@@ -274,7 +257,9 @@ def login(username: str, password: str):
         "username": user["username"],
         "role": user["role"]
     }
-# ---------------- UNIVERSAL CSV ETL ----------------
+
+# ---------------- UNIVERSAL FINANCIAL CSV ETL ----------------
+
 @app.post("/upload-csv")
 def upload_csv(
     file: UploadFile = File(...),
@@ -284,59 +269,98 @@ def upload_csv(
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only CSV files allowed ❌")
 
-    # get current user from MongoDB
     current_user = users_collection.find_one({"username": user["sub"]})
 
     if not current_user:
         raise HTTPException(status_code=404, detail="User not found ❌")
 
-    # delete previous data of this user
-    financial_collection.delete_many({"user_id": str(current_user["_id"])})
+    # remove previous user data
+    financial_collection.delete_many({
+        "user_id": str(current_user["_id"])
+    })
 
     rows_inserted = 0
 
     try:
+
         df = pd.read_csv(file.file)
 
-        # clean column names
+        # normalize column names
         df.columns = df.columns.str.strip().str.lower()
 
         # remove currency symbols
-        df = df.replace(r'[\$,]', '', regex=True)
+        df = df.replace(r'[\$,₹]', '', regex=True)
 
-        numeric_cols = []
+        # -----------------------------------
+        # SMART COLUMN DETECTION
+        # -----------------------------------
+
+        revenue_keywords = [
+            "revenue","income","sales","turnover",
+            "profit","earnings","gdp","amount","value"
+        ]
+
+        expense_keywords = [
+            "expense","cost","loss","spending",
+            "expenditure","debit","withdrawal"
+        ]
+
+        revenue_col = None
+        expense_col = None
 
         for col in df.columns:
-            converted = pd.to_numeric(df[col], errors="coerce")
 
-            if converted.notna().sum() > 0:
-                df[col] = converted
-                numeric_cols.append(col)
+            if any(key in col for key in revenue_keywords):
+                revenue_col = col
 
-        if len(numeric_cols) < 2:
+            if any(key in col for key in expense_keywords):
+                expense_col = col
+
+        # fallback: detect numeric columns
+        if revenue_col is None or expense_col is None:
+
+            numeric_cols = []
+
+            for col in df.columns:
+
+                converted = pd.to_numeric(df[col], errors="coerce")
+
+                if converted.notna().sum() > 0:
+                    df[col] = converted
+                    numeric_cols.append(col)
+
+            if len(numeric_cols) >= 2:
+                revenue_col = numeric_cols[0]
+                expense_col = numeric_cols[1]
+
+        if revenue_col is None or expense_col is None:
+
             raise HTTPException(
                 status_code=400,
-                detail="Dataset must contain at least 2 numeric columns"
+                detail="Unable to detect revenue & expense columns automatically"
             )
 
-        revenue_col = numeric_cols[0]
-        expense_col = numeric_cols[1]
+        # -----------------------------------
+        # STORE DATA
+        # -----------------------------------
 
         records = []
 
         for _, row in df.iterrows():
 
-            revenue = row[revenue_col]
-            expense = row[expense_col]
+            revenue = pd.to_numeric(row.get(revenue_col), errors="coerce")
+            expense = pd.to_numeric(row.get(expense_col), errors="coerce")
 
             if pd.isna(revenue) or pd.isna(expense):
                 continue
 
             records.append({
+
                 "user_id": str(current_user["_id"]),
                 "revenue": float(revenue),
                 "expense": float(expense),
                 "created_at": datetime.utcnow()
+
             })
 
         if records:
@@ -345,15 +369,19 @@ def upload_csv(
         rows_inserted = len(records)
 
     except Exception as e:
+
         raise HTTPException(
             status_code=500,
             detail=f"CSV processing error: {str(e)}"
         )
 
     return {
-        "message": "CSV uploaded successfully ✅",
-        "rows_inserted": rows_inserted
+        "message": "Financial dataset processed successfully ✅",
+        "rows_inserted": rows_inserted,
+        "detected_revenue_column": revenue_col,
+        "detected_expense_column": expense_col
     }
+
 # ---------------- REVENUE FORECAST ----------------
 
 @app.get("/forecast-revenue")

@@ -19,6 +19,8 @@ import {
 
 import "./Dashboard.css";
 
+const API_BASE = "https://finpulse-ai-1.onrender.com";
+
 function Dashboard() {
 
   const navigate = useNavigate();
@@ -34,10 +36,6 @@ function Dashboard() {
 
   const COLORS = ["#22c55e", "#f59e0b", "#ef4444"];
 
-  /* ================================
-     AUTH CHECK + REAL TIME REFRESH
-  ================================== */
-
   useEffect(() => {
 
     const token = localStorage.getItem("token");
@@ -49,7 +47,6 @@ function Dashboard() {
 
     loadDashboard(token);
 
-    // 🔴 Real-time monitoring (refresh every 10 sec)
     const interval = setInterval(() => {
       loadDashboard(token, false);
     }, 10000);
@@ -57,10 +54,6 @@ function Dashboard() {
     return () => clearInterval(interval);
 
   }, [navigate]);
-
-  /* ================================
-     LOAD DASHBOARD DATA
-  ================================== */
 
   const loadDashboard = async (token, showLoader = true) => {
 
@@ -73,7 +66,7 @@ function Dashboard() {
       };
 
       const res = await axios.get(
-        "http://127.0.0.1:8000/dashboard-data",
+        `${API_BASE}/dashboard-data`,
         { headers }
       );
 
@@ -82,9 +75,7 @@ function Dashboard() {
       setKpis(data.kpis);
       setForecast(data.forecast);
       setPrediction(data.prediction);
-      setComparisonData(data.chart);
-
-      /* ===== Risk Distribution ===== */
+      setComparisonData(data.chart || []);
 
       const results = data.anomaly?.results || [];
 
@@ -123,10 +114,6 @@ function Dashboard() {
 
   };
 
-  /* ================================
-     CSV UPLOAD
-  ================================== */
-
   const uploadCSV = async (e) => {
 
     const file = e.target.files[0];
@@ -140,7 +127,7 @@ function Dashboard() {
     try {
 
       await axios.post(
-        "http://127.0.0.1:8000/upload-csv",
+        `${API_BASE}/upload-csv`,
         formData,
         {
           headers: {
@@ -163,20 +150,12 @@ function Dashboard() {
 
   };
 
-  /* ================================
-     LOGOUT
-  ================================== */
-
   const logout = () => {
 
     localStorage.removeItem("token");
     navigate("/");
 
   };
-
-  /* ================================
-     LOADING SCREEN
-  ================================== */
 
   if (loading) {
 
@@ -187,10 +166,6 @@ function Dashboard() {
     );
 
   }
-
-  /* ================================
-     FORECAST DATA
-  ================================== */
 
   const forecastChart = [...forecast];
 
@@ -203,15 +178,9 @@ function Dashboard() {
 
   }
 
-  /* ================================
-     DASHBOARD UI
-  ================================== */
-
   return (
 
     <div className="dashboard">
-
-      {/* SIDEBAR */}
 
       <div className="sidebar">
 
@@ -237,13 +206,9 @@ function Dashboard() {
 
       </div>
 
-      {/* MAIN AREA */}
-
       <div className="main">
 
         <h1>Financial Analytics Dashboard</h1>
-
-        {/* CSV Upload */}
 
         <div className="upload-box">
 
@@ -256,8 +221,6 @@ function Dashboard() {
           />
 
         </div>
-
-        {/* KPI CARDS */}
 
         <div className="kpi-container">
 
@@ -278,44 +241,21 @@ function Dashboard() {
 
         </div>
 
-        {/* CHARTS */}
-
         <div className="chart-row">
-
-          {/* FORECAST */}
 
           <div className="chart-card">
 
             <h3>Revenue Forecast</h3>
 
             <LineChart width={500} height={300} data={forecastChart}>
-
-              <XAxis dataKey="month" stroke="#94a3b8"/>
-
-              <YAxis
-                width={90}
-                tickFormatter={(value) => value.toLocaleString()}
-                stroke="#94a3b8"
-              />
-
-              <Tooltip formatter={(value) => value.toLocaleString()}/>
-
-              <CartesianGrid stroke="#334155"/>
-
-              <Line
-                type="monotone"
-                dataKey="revenue"
-                stroke="#38bdf8"
-                strokeWidth={3}
-                dot={{ r: 5 }}
-                activeDot={{ r: 9 }}
-              />
-
+              <XAxis dataKey="month" />
+              <YAxis />
+              <Tooltip />
+              <CartesianGrid stroke="#ccc" />
+              <Line type="monotone" dataKey="revenue" stroke="#3b82f6" strokeWidth={3}/>
             </LineChart>
 
           </div>
-
-          {/* RISK PIE */}
 
           <div className="chart-card">
 
@@ -346,25 +286,19 @@ function Dashboard() {
 
         </div>
 
-        {/* BAR CHART */}
-
         <div className="chart-card">
 
           <h3>Revenue vs Expense</h3>
 
           <BarChart width={700} height={300} data={comparisonData}>
 
-            <CartesianGrid strokeDasharray="3 3" stroke="#334155"/>
+            <CartesianGrid strokeDasharray="3 3"/>
 
-            <XAxis dataKey="month" stroke="#94a3b8"/>
+            <XAxis dataKey="month"/>
 
-            <YAxis
-              width={90}
-              tickFormatter={(value) => value.toLocaleString()}
-              stroke="#94a3b8"
-            />
+            <YAxis/>
 
-            <Tooltip formatter={(value) => value.toLocaleString()}/>
+            <Tooltip/>
 
             <Legend/>
 

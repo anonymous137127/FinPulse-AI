@@ -3,6 +3,9 @@ import axios from "axios";
 import { useNavigate, Link } from "react-router-dom";
 import "./Login.css";
 
+// Backend API
+const API_BASE = "https://finpulse-ai-1.onrender.com";
+
 function Register() {
 
   const [username, setUsername] = useState("");
@@ -31,7 +34,7 @@ function Register() {
       setMessage("");
 
       await axios.post(
-        "http://127.0.0.1:8000/register",
+        `${API_BASE}/register`,
         null,
         {
           params: {
@@ -46,7 +49,7 @@ function Register() {
 
       setTimeout(() => {
         navigate("/");
-      }, 1500);
+      }, 1200);
 
     } catch (error) {
 

@@ -3,6 +3,9 @@ import axios from "axios";
 import { useNavigate, Link } from "react-router-dom";
 import "./Login.css";
 
+// Backend API
+const API_BASE = "https://finpulse-ai-1.onrender.com";
+
 function Login() {
 
   const [username, setUsername] = useState("");
@@ -22,7 +25,7 @@ function Login() {
     try {
 
       const response = await axios.post(
-        "http://127.0.0.1:8000/login",
+        `${API_BASE}/login`,
         null,
         {
           params: {
@@ -32,13 +35,14 @@ function Login() {
         }
       );
 
+      // Save JWT token
       localStorage.setItem("token", response.data.access_token);
 
       setMessage("✅ Login Successful");
 
       setTimeout(() => {
         navigate("/dashboard");
-      }, 1500);
+      }, 1200);
 
     } catch (error) {
 
