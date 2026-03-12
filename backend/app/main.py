@@ -870,13 +870,18 @@ def hash_financial_data(
         "total_records": len(dataset)
     }
 
-# ---------------- BLOCKCHAIN SYSTEM ----------------
+## ---------------- BLOCKCHAIN SYSTEM ----------------
 
 class Blockchain:
 
     def __init__(self):
-        self.chain = []
-        self.create_genesis_block()
+
+        # load chain from MongoDB
+        self.chain = list(blockchain_collection.find({}, {"_id": 0}).sort("index", 1))
+
+        # create genesis block ONLY if blockchain empty
+        if len(self.chain) == 0:
+            self.create_genesis_block()
 
     # ---------------- HASH FUNCTION ----------------
     def calculate_hash(self, index, timestamp, data, previous_hash):
@@ -909,7 +914,6 @@ class Blockchain:
 
         self.chain.append(genesis_block)
 
-        # store genesis block in MongoDB
         blockchain_collection.insert_one(genesis_block)
 
     # ---------------- ADD BLOCK ----------------
@@ -933,13 +937,15 @@ class Blockchain:
 
         self.chain.append(new_block)
 
-        # store block in MongoDB
         blockchain_collection.insert_one(new_block)
 
         return new_block
 
     # ---------------- INTEGRITY CHECK ----------------
     def is_chain_valid(self):
+
+        if len(self.chain) <= 1:
+            return True
 
         for i in range(1, len(self.chain)):
 
@@ -965,38 +971,56 @@ class Blockchain:
 # 🔥 Initialize Blockchain
 blockchain = Blockchain()
 
-
 # ---------------- LOAD BLOCKCHAIN FROM MONGODB ----------------
 
 def load_blockchain_from_db():
 
-    blocks = list(
-        blockchain_collection.find().sort("index", 1)
-    )
+    try:
 
-    blockchain.chain = []
+        blocks = list(
+            blockchain_collection.find({}, {"_id": 0}).sort("index", 1)
+        )
 
-    if not blocks:
-        blockchain.create_genesis_block()
-        return
+        blockchain.chain = []
 
-    for block in blocks:
+        # If DB empty → create genesis block
+        if len(blocks) == 0:
+            blockchain.create_genesis_block()
+            print("Genesis block created")
+            return
 
-        blockchain.chain.append({
-            "index": block["index"],
-            "timestamp": block["timestamp"],
-            "data": block["data"],
-            "previous_hash": block["previous_hash"],
-            "current_hash": block["current_hash"]
-        })
+        for block in blocks:
 
+            # safety check for required fields
+            if not all(k in block for k in ["index", "timestamp", "data", "previous_hash", "current_hash"]):
+                continue
+
+            blockchain.chain.append({
+                "index": block["index"],
+                "timestamp": block["timestamp"],
+                "data": block["data"],
+                "previous_hash": block["previous_hash"],
+                "current_hash": block["current_hash"]
+            })
+
+        print(f"Blockchain loaded successfully ({len(blockchain.chain)} blocks)")
+
+    except Exception as e:
+        print("Blockchain loading error:", str(e))
 
 # ---------------- STARTUP EVENT ----------------
 
 @app.on_event("startup")
 def startup_event():
 
+    print("Loading blockchain from MongoDB...")
+
     load_blockchain_from_db()
+
+    if blockchain.is_chain_valid():
+        print("Blockchain integrity verified ✅")
+    else:
+        print("Blockchain integrity FAILED ❌")
 
 # =========================================
 # ADD BLOCK API
@@ -1040,7 +1064,6 @@ def add_block(user: dict = Depends(require_role(["admin","analyst","auditor"])))
         "current_hash": new_block["current_hash"]
     }
 
-
 # =========================================
 # VIEW BLOCKCHAIN
 # =========================================
@@ -1048,11 +1071,29 @@ def add_block(user: dict = Depends(require_role(["admin","analyst","auditor"])))
 @app.get("/view-chain")
 def view_chain(user: dict = Depends(require_role(["admin","analyst","auditor"]))):
 
-    return {
-        "length": len(blockchain.chain),
-        "is_valid": blockchain.is_chain_valid(),
-        "chain": blockchain.chain
-    }
+    try:
+
+        if not blockchain.chain:
+            return {
+                "message": "Blockchain is empty",
+                "length": 0,
+                "is_valid": True,
+                "chain": []
+            }
+
+        return {
+            "message": "Blockchain retrieved successfully",
+            "length": len(blockchain.chain),
+            "is_valid": blockchain.is_chain_valid(),
+            "chain": blockchain.chain
+        }
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Blockchain error: {str(e)}"
+        )
 
 
 # =========================================
@@ -1062,17 +1103,31 @@ def view_chain(user: dict = Depends(require_role(["admin","analyst","auditor"]))
 @app.get("/verify-integrity")
 def verify_integrity(user: dict = Depends(require_role(["admin","analyst","auditor"]))):
 
-    if blockchain.is_chain_valid():
+    try:
+
+        valid = blockchain.is_chain_valid()
+
+        if valid:
+            return {
+                "status": "Valid",
+                "icon": "✅",
+                "message": "Blockchain integrity verified successfully",
+                "total_blocks": len(blockchain.chain)
+            }
+
         return {
-            "status": "Valid ✅",
-            "message": "Blockchain integrity verified successfully"
+            "status": "Tampered",
+            "icon": "❌",
+            "message": "Blockchain has been modified",
+            "total_blocks": len(blockchain.chain)
         }
 
-    return {
-        "status": "Tampered ❌",
-        "message": "Blockchain has been modified"
-    }
+    except Exception as e:
 
+        raise HTTPException(
+            status_code=500,
+            detail=f"Integrity verification error: {str(e)}"
+        )
 
 # =========================================
 # KPI API
@@ -1238,3 +1293,27 @@ def get_dashboard_data(user: dict = Depends(require_role(["admin","analyst","aud
         "blockchain": blockchain_status
     }
 
+@app.get("/reset-blockchain")
+def reset_blockchain():
+
+    blockchain_collection.delete_many({})
+
+    blockchain.chain = []
+
+    blockchain.create_genesis_block()
+
+    return {
+        "message": "Blockchain reset successfully",
+        "status": "Valid"
+    }
+
+class Blockchain:
+
+    def __init__(self):
+
+        self.chain = list(
+            blockchain_collection.find({}, {"_id":0}).sort("index",1)
+        )
+
+        if len(self.chain) == 0:
+            self.create_genesis_block()
