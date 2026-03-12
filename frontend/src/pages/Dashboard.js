@@ -25,16 +25,20 @@ function Dashboard() {
 
   const navigate = useNavigate();
 
-  const [kpis, setKpis] = useState(null);
+  const [kpis, setKpis] = useState({});
   const [forecast, setForecast] = useState([]);
   const [prediction, setPrediction] = useState(null);
-  const [risk, setRisk] = useState("");
-  const [blockchain, setBlockchain] = useState("");
+  const [risk, setRisk] = useState("Total Records Analysed: 0");
+  const [blockchain, setBlockchain] = useState("Unknown");
   const [riskData, setRiskData] = useState([]);
   const [comparisonData, setComparisonData] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const COLORS = ["#22c55e", "#f59e0b", "#ef4444"];
+
+  /* ================================
+     AUTH + LOAD DATA
+  ================================== */
 
   useEffect(() => {
 
@@ -55,6 +59,11 @@ function Dashboard() {
 
   }, [navigate]);
 
+
+  /* ================================
+     LOAD DASHBOARD DATA
+  ================================== */
+
   const loadDashboard = async (token, showLoader = true) => {
 
     try {
@@ -70,11 +79,11 @@ function Dashboard() {
         { headers }
       );
 
-      const data = res.data;
+      const data = res.data || {};
 
-      setKpis(data.kpis);
-      setForecast(data.forecast);
-      setPrediction(data.prediction);
+      setKpis(data.kpis || {});
+      setForecast(data.forecast || []);
+      setPrediction(data.prediction || null);
       setComparisonData(data.chart || []);
 
       const results = data.anomaly?.results || [];
@@ -105,6 +114,11 @@ function Dashboard() {
 
       console.error("Dashboard Load Error:", error);
 
+      if (error.response?.status === 401) {
+        localStorage.removeItem("token");
+        navigate("/");
+      }
+
     }
     finally {
 
@@ -113,6 +127,11 @@ function Dashboard() {
     }
 
   };
+
+
+  /* ================================
+     CSV UPLOAD
+  ================================== */
 
   const uploadCSV = async (e) => {
 
@@ -150,12 +169,22 @@ function Dashboard() {
 
   };
 
+
+  /* ================================
+     LOGOUT
+  ================================== */
+
   const logout = () => {
 
     localStorage.removeItem("token");
     navigate("/");
 
   };
+
+
+  /* ================================
+     LOADING SCREEN
+  ================================== */
 
   if (loading) {
 
@@ -166,6 +195,11 @@ function Dashboard() {
     );
 
   }
+
+
+  /* ================================
+     FORECAST DATA
+  ================================== */
 
   const forecastChart = [...forecast];
 
@@ -178,9 +212,16 @@ function Dashboard() {
 
   }
 
+
+  /* ================================
+     UI
+  ================================== */
+
   return (
 
     <div className="dashboard">
+
+      {/* SIDEBAR */}
 
       <div className="sidebar">
 
@@ -206,9 +247,14 @@ function Dashboard() {
 
       </div>
 
+
+      {/* MAIN */}
+
       <div className="main">
 
         <h1>Financial Analytics Dashboard</h1>
+
+        {/* CSV Upload */}
 
         <div className="upload-box">
 
@@ -222,40 +268,56 @@ function Dashboard() {
 
         </div>
 
+
+        {/* KPI */}
+
         <div className="kpi-container">
 
           <div className="kpi-card">
             <h3>Total Revenue</h3>
-            <p>₹ {Number(kpis?.total_revenue || 0).toLocaleString()}</p>
+            <p>₹ {Number(kpis.total_revenue || 0).toLocaleString()}</p>
           </div>
 
           <div className="kpi-card">
             <h3>Total Expense</h3>
-            <p>₹ {Number(kpis?.total_expense || 0).toLocaleString()}</p>
+            <p>₹ {Number(kpis.total_expense || 0).toLocaleString()}</p>
           </div>
 
           <div className="kpi-card">
             <h3>Net Profit</h3>
-            <p>₹ {Number(kpis?.net_profit || 0).toLocaleString()}</p>
+            <p>₹ {Number(kpis.net_profit || 0).toLocaleString()}</p>
           </div>
 
         </div>
 
+
+        {/* CHARTS */}
+
         <div className="chart-row">
+
+          {/* FORECAST */}
 
           <div className="chart-card">
 
             <h3>Revenue Forecast</h3>
 
             <LineChart width={500} height={300} data={forecastChart}>
-              <XAxis dataKey="month" />
-              <YAxis />
-              <Tooltip />
-              <CartesianGrid stroke="#ccc" />
-              <Line type="monotone" dataKey="revenue" stroke="#3b82f6" strokeWidth={3}/>
+              <XAxis dataKey="month"/>
+              <YAxis/>
+              <Tooltip/>
+              <CartesianGrid stroke="#ccc"/>
+              <Line
+                type="monotone"
+                dataKey="revenue"
+                stroke="#3b82f6"
+                strokeWidth={3}
+              />
             </LineChart>
 
           </div>
+
+
+          {/* RISK PIE */}
 
           <div className="chart-card">
 
@@ -286,6 +348,9 @@ function Dashboard() {
 
         </div>
 
+
+        {/* BAR CHART */}
+
         <div className="chart-card">
 
           <h3>Revenue vs Expense</h3>
@@ -293,13 +358,9 @@ function Dashboard() {
           <BarChart width={700} height={300} data={comparisonData}>
 
             <CartesianGrid strokeDasharray="3 3"/>
-
             <XAxis dataKey="month"/>
-
             <YAxis/>
-
             <Tooltip/>
-
             <Legend/>
 
             <Bar dataKey="revenue" fill="#6366f1"/>

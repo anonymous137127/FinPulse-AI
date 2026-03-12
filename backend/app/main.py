@@ -66,14 +66,18 @@ app = FastAPI(title="FinPulse API 🚀")
 
 # CORS
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://gilded-medovik-91b688.netlify.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 # AUTH FUNCTIONS
 
 def create_access_token(data: dict):
