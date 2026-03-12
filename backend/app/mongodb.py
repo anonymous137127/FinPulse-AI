@@ -14,3 +14,6 @@ financial_collection = db["financial_data"]
 ai_collection = db["ai_insights"]
 fraud_collection = db["fraud_alerts"]
 reports_collection = db["reports"]
+
+# 🔥 ADD THIS
+blockchain_collection = db["blockchain"]
