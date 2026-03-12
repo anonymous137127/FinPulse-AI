@@ -1,48 +1,42 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.orm import Session
-from app.database import SessionLocal
-from app import models
+
 from jose import jwt
 from passlib.context import CryptContext
+
 from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
+
 import pandas as pd
-import os
-from app.spark_utils import get_spark_session
-from sklearn.linear_model import LinearRegression
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import r2_score
-from sklearn.ensemble import IsolationForest
 import numpy as np
 import joblib
-from sklearn.linear_model import LogisticRegression
+import os
+import json
+import hashlib
+
+# Machine Learning
+from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import r2_score, accuracy_score
+from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier
-from sklearn.metrics import accuracy_score
-import hashlib
-import json
-from app.blockchain import Blockchain
-from datetime import datetime
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi import UploadFile, File
-import pandas as pd
-from sqlalchemy import func
-from datetime import datetime
-from dateutil.relativedelta import relativedelta
-from fastapi import HTTPException, Depends
-from sqlalchemy.orm import Session
-from pydantic import BaseModel
-import hashlib
-from passlib.context import CryptContext
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+
+# Spark (optional)
 from pyspark.sql import SparkSession
-from app.schemas import RegisterRequest
-from fastapi import Body
-from app.schemas import RegisterRequest
-import hashlib
+from app.spark_utils import get_spark_session
+
+# Blockchain
+from app.blockchain import Blockchain
+
+# MongoDB
 from app.mongodb import db
+from app.mongodb import users_collection, financial_collection
+
+# Schemas
+from app.schemas import RegisterRequest
+
 
 pwd_context = CryptContext(
     schemes=["bcrypt"],
@@ -69,14 +63,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# ---------------- DATABASE ----------------
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 # ---------------- AUTH ----------------
 
@@ -111,28 +97,26 @@ def require_role(roles: list):
 def home():
     return {"message": "Backend Running Successfully 🚀"}
 
-from app.mongodb import db
+
+# ---------------- MONGO TEST ----------------
+
+from app.mongodb import users_collection
 
 @app.get("/mongo-test")
 def mongo_test():
 
     data = {"message": "MongoDB working 🚀"}
 
-    db.test.insert_one(data)
+    users_collection.insert_one(data)
 
     return {"status": "MongoDB Insert Success"}
+
 
 # ---------------- REGISTER ----------------
 
 @app.post("/register")
-def register(
-    username: str,
-    password: str,
-    role: str,
-    db: Session = Depends(get_db)
-):
+def register(username: str, password: str, role: str):
 
-    # Clean inputs
     username = username.strip()
     password = password.strip()
 
@@ -150,20 +134,15 @@ def register(
             detail="Username must be at least 3 characters"
         )
 
-    # Validate password length (bcrypt limit = 72 bytes)
+    # Validate password
     if len(password) < 4:
         raise HTTPException(
             status_code=400,
             detail="Password must be at least 4 characters"
         )
 
-    if len(password) > 72:
-        password = password[:72]  # truncate for bcrypt safety
-
-    # Check if user exists
-    existing_user = db.query(models.User).filter(
-        models.User.username == username
-    ).first()
+    # Check if user already exists
+    existing_user = users_collection.find_one({"username": username})
 
     if existing_user:
         raise HTTPException(
@@ -174,40 +153,32 @@ def register(
     # Hash password
     hashed_password = pwd_context.hash(password)
 
-    # Create user
-    new_user = models.User(
-        username=username,
-        password=hashed_password,
-        role=role
-    )
-
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
+    # Insert user into MongoDB
+    users_collection.insert_one({
+        "username": username,
+        "password": hashed_password,
+        "role": role,
+        "created_at": datetime.utcnow()
+    })
 
     return {
         "message": "User registered successfully ✅",
         "username": username,
         "role": role
     }
-
 # ---------------- LOGIN ----------------
 
+from app.mongodb import users_collection
+
 @app.post("/login")
-def login(
-    username: str,
-    password: str,
-    db: Session = Depends(get_db)
-):
+def login(username: str, password: str):
 
     # Clean input
     username = username.strip()
     password = password.strip()
 
-    # Find user
-    user = db.query(models.User).filter(
-        models.User.username == username
-    ).first()
+    # Find user in MongoDB
+    user = users_collection.find_one({"username": username})
 
     if not user:
         raise HTTPException(
@@ -216,7 +187,7 @@ def login(
         )
 
     # Verify bcrypt password
-    if not pwd_context.verify(password, user.password):
+    if not pwd_context.verify(password, user["password"]):
         raise HTTPException(
             status_code=401,
             detail="Invalid username or password ❌"
@@ -224,46 +195,39 @@ def login(
 
     # Create JWT token
     token = create_access_token({
-        "sub": user.username,
-        "role": user.role
+        "sub": user["username"],
+        "role": user["role"]
     })
 
     return {
         "message": "Login successful ✅",
         "access_token": token,
         "token_type": "bearer",
-        "username": user.username,
-        "role": user.role
+        "username": user["username"],
+        "role": user["role"]
     }
 # ---------------- UNIVERSAL CSV ETL ----------------
 @app.post("/upload-csv")
 def upload_csv(
     file: UploadFile = File(...),
-    user: dict = Depends(require_role(["admin","analyst","auditor"])),
-    db: Session = Depends(get_db)
+    user: dict = Depends(require_role(["admin","analyst","auditor"]))
 ):
 
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only CSV files allowed ❌")
 
-    current_user = db.query(models.User).filter(
-        models.User.username == user["sub"]
-    ).first()
+    # get current user from MongoDB
+    current_user = users_collection.find_one({"username": user["sub"]})
 
     if not current_user:
         raise HTTPException(status_code=404, detail="User not found ❌")
 
-    # delete previous user data
-    db.query(models.FinancialData).filter(
-        models.FinancialData.user_id == current_user.id
-    ).delete()
-
-    db.commit()
+    # delete previous data of this user
+    financial_collection.delete_many({"user_id": str(current_user["_id"])})
 
     rows_inserted = 0
 
     try:
-
         df = pd.read_csv(file.file)
 
         # clean column names
@@ -272,13 +236,11 @@ def upload_csv(
         # remove currency symbols
         df = df.replace(r'[\$,]', '', regex=True)
 
-        # detect numeric columns automatically
         numeric_cols = []
 
         for col in df.columns:
             converted = pd.to_numeric(df[col], errors="coerce")
 
-            # if column has numeric values keep it
             if converted.notna().sum() > 0:
                 df[col] = converted
                 numeric_cols.append(col)
@@ -302,17 +264,15 @@ def upload_csv(
             if pd.isna(revenue) or pd.isna(expense):
                 continue
 
-            records.append(
-                models.FinancialData(
-                    user_id=current_user.id,
-                    revenue=float(revenue),
-                    expense=float(expense)
-                )
-            )
+            records.append({
+                "user_id": str(current_user["_id"]),
+                "revenue": float(revenue),
+                "expense": float(expense),
+                "created_at": datetime.utcnow()
+            })
 
         if records:
-            db.bulk_save_objects(records)
-            db.commit()
+            financial_collection.insert_many(records)
 
         rows_inserted = len(records)
 
@@ -326,11 +286,12 @@ def upload_csv(
         "message": "CSV uploaded successfully ✅",
         "rows_inserted": rows_inserted
     }
+
 # ---------------- SPARK (LIGHT VERSION) ----------------
 
 @app.post("/upload-csv-spark")
 def upload_csv_spark(file: UploadFile = File(...),
-                     user: dict = Depends(require_role(["admin","analyst","auditor"]))):
+    user: dict = Depends(require_role(["admin","analyst","auditor"]))):
 
     spark = get_spark_session()
 
