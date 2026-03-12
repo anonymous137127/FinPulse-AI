@@ -1254,7 +1254,6 @@ def revenue_forecast(user: dict = Depends(require_role(["admin","analyst","audit
 
     return forecast
 
-
 # =========================================
 # CHART DATA
 # =========================================
@@ -1264,9 +1263,17 @@ def chart_data(user: dict = Depends(require_role(["admin","analyst","auditor"]))
 
     current_user = users_collection.find_one({"username": user["sub"]})
 
-    data = list(financial_collection.find({
-        "user_id": str(current_user["_id"])
-    }))
+    if not current_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    data = list(
+        financial_collection.find({
+            "user_id": str(current_user["_id"])
+        })
+    )
+
+    if not data:
+        return []
 
     today = datetime.today()
 
@@ -1275,10 +1282,18 @@ def chart_data(user: dict = Depends(require_role(["admin","analyst","auditor"]))
         for i in range(5, -1, -1)
     ]
 
-    revenues = [float(r["revenue"]) for r in data]
-    expenses = [float(r["expense"]) for r in data]
+    # SAFE extraction (prevents KeyError)
+    revenues = [
+        float(r.get("revenue", 0))
+        for r in data
+    ]
 
-    chunk_size = max(1, len(revenues)//6)
+    expenses = [
+        float(r.get("expense", 0))
+        for r in data
+    ]
+
+    chunk_size = max(1, len(revenues) // 6)
 
     result = []
 
@@ -1294,7 +1309,6 @@ def chart_data(user: dict = Depends(require_role(["admin","analyst","auditor"]))
         })
 
     return result
-
 
 # =========================================
 # DASHBOARD DATA
