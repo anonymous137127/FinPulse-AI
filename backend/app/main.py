@@ -27,13 +27,6 @@ from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier
 
 # ===============================
-# Spark
-# ===============================
-
-from app.spark_utils import get_spark_session
-from app.spark_utils import get_spark_session
-
-# ===============================
 # Blockchain
 # ===============================
 
@@ -55,7 +48,6 @@ from app.mongodb import (
 # ===============================
 
 from app.schemas import RegisterRequest
-
 
 # ===============================
 # PASSWORD HASHING
@@ -93,6 +85,52 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ===============================
+# AUTH FUNCTIONS
+# ===============================
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    try:
+        payload = jwt.decode(
+            credentials.credentials,
+            SECRET_KEY,
+            algorithms=[ALGORITHM]
+        )
+        return payload
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token ❌")
+
+
+def require_role(roles: list):
+
+    def role_checker(user: dict = Depends(verify_token)):
+
+        if user.get("role") not in roles:
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied ❌"
+            )
+
+        return user
+
+    return role_checker
+
+
+# ===============================
+# BASIC ROUTE
+# ===============================
+
+@app.get("/")
+def home():
+    return {"message": "Backend Running Successfully 🚀"}
 
 # ---------------- AUTH ----------------
 
@@ -316,39 +354,6 @@ def upload_csv(
         "message": "CSV uploaded successfully ✅",
         "rows_inserted": rows_inserted
     }
-# ---------------- SPARK (LIGHT VERSION) ----------------
-
-@app.post("/upload-csv-spark")
-def upload_csv_spark(
-    file: UploadFile = File(...),
-    user: dict = Depends(require_role(["admin","analyst","auditor"]))
-):
-
-    spark = get_spark_session()
-
-    temp_path = f"temp_{file.filename}"
-
-    with open(temp_path, "wb") as f:
-        f.write(file.file.read())
-
-    df = spark.read.csv(temp_path, header=True, inferSchema=True)
-
-    # clean column names
-    for col in df.columns:
-        df = df.withColumnRenamed(col, col.strip().lower())
-
-    row_count = df.count()
-    columns = df.columns
-
-    os.remove(temp_path)
-
-    return {
-        "message": "Spark processed successfully ✅",
-        "columns": columns,
-        "row_count": row_count
-    }
-
-
 # ---------------- REVENUE FORECAST ----------------
 
 @app.get("/forecast-revenue")
