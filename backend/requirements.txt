@@ -1,15 +1,13 @@
 fastapi
 uvicorn
-sqlalchemy
-pymysql
+pymongo
+dnspython
 python-jose
 passlib[bcrypt]
 pandas
 numpy
 python-multipart
 pydantic
-dnspython
-pymongo
 scikit-learn
 xgboost
 joblib
