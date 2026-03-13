@@ -595,116 +595,142 @@ def classify_risk(
 
 @app.get("/classify-risk-xgb")
 def classify_risk_xgb(
-    user: dict = Depends(require_role(["admin","analyst","auditor"]))
+    user: dict = Depends(require_role(["admin", "analyst", "auditor"]))
 ):
+    try:
 
-    # 🔹 Get current logged-in user
-    current_user = users_collection.find_one({"username": user["sub"]})
+        # 🔹 Get logged-in user
+        current_user = users_collection.find_one({"username": user["sub"]})
 
-    if not current_user:
-        raise HTTPException(status_code=404, detail="User not found ❌")
+        if not current_user:
+            raise HTTPException(status_code=404, detail="User not found ❌")
 
-    # 🔹 Load only this user's financial data
-    data = list(
-        financial_collection.find(
-            {"user_id": str(current_user["_id"])}
-        )
-    )
-
-    # 🔹 If no data
-    if not data:
-        return {
-            "message": "No financial data uploaded yet",
-            "total_records": 0,
-            "results": []
-        }
-
-    # 🔹 Minimum records required
-    if len(data) < 10:
-        return {
-            "message": "Need at least 10 records for XGBoost classification",
-            "total_records": len(data),
-            "results": []
-        }
-
-    # --------- Prepare Feature Matrix ----------
-    revenues = np.array(
-        [float(d["revenue"]) for d in data]
-    ).reshape(-1, 1)
-
-    # --------- Create Labels ----------
-    labels = []
-
-    for value in revenues:
-
-        val = value[0]
-
-        if val < 1000:
-            labels.append("Low")
-        elif val < 5000:
-            labels.append("Medium")
-        else:
-            labels.append("High")
-
-    # --------- Encode Labels ----------
-    encoder = LabelEncoder()
-    y = encoder.fit_transform(labels)
-
-    # --------- Train/Test Split ----------
-    X_train, X_test, y_train, y_test = train_test_split(
-        revenues, y, test_size=0.2, random_state=42
-    )
-
-    # --------- Train XGBoost Model ----------
-    model = XGBClassifier(
-        n_estimators=150,
-        max_depth=4,
-        learning_rate=0.1,
-        random_state=42,
-        eval_metric='mlogloss'
-    )
-
-    model.fit(X_train, y_train)
-
-    # --------- Evaluate Model ----------
-    y_pred = model.predict(X_test)
-    accuracy = accuracy_score(y_test, y_pred)
-
-    # --------- Save Model ----------
-    joblib.dump(model, "xgb_risk_model.pkl")
-    joblib.dump(encoder, "risk_label_encoder.pkl")
-
-    # --------- Predict For All Records ----------
-    all_predictions = model.predict(revenues)
-    probabilities = model.predict_proba(revenues)
-
-    results = []
-
-    for i, record in enumerate(data):
-
-        risk_label = encoder.inverse_transform([all_predictions[i]])[0]
-        confidence = round(float(max(probabilities[i]) * 100), 2)
-
-        # 🔹 Update MongoDB record
-        financial_collection.update_one(
-            {"_id": record["_id"]},
-            {"$set": {"risk_level": risk_label}}
+        # 🔹 Get financial data for this user
+        data = list(
+            financial_collection.find(
+                {"user_id": str(current_user["_id"])}
+            )
         )
 
-        results.append({
-            "id": str(record["_id"]),
-            "revenue": record["revenue"],
-            "classified_risk": risk_label,
-            "confidence_percent": confidence
-        })
+        if not data:
+            return {
+                "message": "No financial data uploaded yet",
+                "total_records": 0,
+                "results": []
+            }
 
-    return {
-        "message": "XGBoost risk classification completed ✅",
-        "model_accuracy": round(float(accuracy), 4),
-        "total_records": len(data),
-        "model_saved": True,
-        "results": results
-    }
+        # 🔹 Keep only records that contain valid revenue
+        valid_data = []
+
+        for record in data:
+
+            if "revenue" in record and record["revenue"] is not None:
+
+                try:
+                    revenue_value = float(record["revenue"])
+                    valid_data.append({
+                        "_id": record["_id"],
+                        "revenue": revenue_value
+                    })
+                except:
+                    continue
+
+        # 🔹 Minimum dataset size check
+        if len(valid_data) < 10:
+            return {
+                "message": "Need at least 10 valid revenue records for XGBoost",
+                "total_records": len(valid_data),
+                "results": []
+            }
+
+        # -------- Prepare Feature Matrix --------
+        revenues = np.array(
+            [d["revenue"] for d in valid_data]
+        ).reshape(-1, 1)
+
+        # -------- Create Risk Labels --------
+        labels = []
+
+        for r in revenues:
+
+            value = r[0]
+
+            if value < 1000:
+                labels.append("Low")
+            elif value < 5000:
+                labels.append("Medium")
+            else:
+                labels.append("High")
+
+        # -------- Encode Labels --------
+        encoder = LabelEncoder()
+        y = encoder.fit_transform(labels)
+
+        # -------- Train/Test Split --------
+        X_train, X_test, y_train, y_test = train_test_split(
+            revenues,
+            y,
+            test_size=0.2,
+            random_state=42
+        )
+
+        # -------- Train XGBoost Model --------
+        model = XGBClassifier(
+            n_estimators=150,
+            max_depth=4,
+            learning_rate=0.1,
+            random_state=42,
+            eval_metric="mlogloss"
+        )
+
+        model.fit(X_train, y_train)
+
+        # -------- Evaluate Model --------
+        y_pred = model.predict(X_test)
+        accuracy = accuracy_score(y_test, y_pred)
+
+        # -------- Save Model --------
+        joblib.dump(model, "xgb_risk_model.pkl")
+        joblib.dump(encoder, "risk_label_encoder.pkl")
+
+        # -------- Predict Risk For All Records --------
+        predictions = model.predict(revenues)
+        probabilities = model.predict_proba(revenues)
+
+        results = []
+
+        for i, record in enumerate(valid_data):
+
+            risk_label = encoder.inverse_transform([predictions[i]])[0]
+            confidence = round(float(max(probabilities[i]) * 100), 2)
+
+            # 🔹 Update MongoDB
+            financial_collection.update_one(
+                {"_id": record["_id"]},
+                {"$set": {"risk_level": risk_label}}
+            )
+
+            results.append({
+                "id": str(record["_id"]),
+                "revenue": record["revenue"],
+                "classified_risk": risk_label,
+                "confidence_percent": confidence
+            })
+
+        return {
+            "message": "XGBoost risk classification completed ✅",
+            "model_accuracy": round(float(accuracy), 4),
+            "total_records": len(valid_data),
+            "model_saved": True,
+            "results": results
+        }
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Risk classification failed: {str(e)}"
+        )
 # ---------------- FORECAST API ----------------
 
 @app.get("/forecast")
