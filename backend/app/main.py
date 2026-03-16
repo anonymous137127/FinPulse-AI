@@ -51,24 +51,20 @@ from app.schemas import RegisterRequest
 
 # PASSWORD HASHING
 
-
 pwd_context = CryptContext(
     schemes=["bcrypt"],
     deprecated="auto"
 )
 
-# JWT CONFIG
+# ENV VARIABLES
 
-
-SECRET_KEY = "my_super_secret_key_123"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+SECRET_KEY = os.getenv("SECRET_KEY")
+ALGORITHM = os.getenv("ALGORITHM")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES"))
 
 security = HTTPBearer()
 
-# ===============================
 # FASTAPI APP
-# ===============================
 
 app = FastAPI(title="FinPulse API 🚀")
 
@@ -90,7 +86,6 @@ def create_access_token(data: dict):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     try:
         payload = jwt.decode(
@@ -102,19 +97,14 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     except:
         raise HTTPException(status_code=401, detail="Invalid token ❌")
 
-
 def require_role(roles: list):
-
     def role_checker(user: dict = Depends(verify_token)):
-
         if user.get("role") not in roles:
             raise HTTPException(
                 status_code=403,
                 detail="Access denied ❌"
             )
-
         return user
-
     return role_checker
 
 # BASIC ROUTE
@@ -150,12 +140,12 @@ def require_role(roles: list):
         return user
 
     return role_checker
+
 # ---------------- BASIC ROUTES ----------------
 
 @app.get("/")
 def home():
     return {"message": "Backend Running Successfully 🚀"}
-
 
 # ---------------- MONGO TEST ----------------
 
