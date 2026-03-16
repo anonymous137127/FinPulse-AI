@@ -24,16 +24,20 @@ function Dashboard() {
 
   const navigate = useNavigate();
 
-  const [kpis, setKpis] = useState(null);
+  const [kpis, setKpis] = useState({});
   const [forecast, setForecast] = useState([]);
   const [prediction, setPrediction] = useState(null);
   const [risk, setRisk] = useState("");
-  const [blockchain, setBlockchain] = useState("");
+  const [blockchain, setBlockchain] = useState("Unknown");
   const [riskData, setRiskData] = useState([]);
   const [comparisonData, setComparisonData] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const COLORS = ["#22c55e", "#f59e0b", "#ef4444"];
+
+  const formatCurrency = (num) => {
+    return `₹ ${Number(num || 0).toLocaleString()}`;
+  };
 
   useEffect(() => {
 
@@ -48,7 +52,7 @@ function Dashboard() {
 
     const interval = setInterval(() => {
       loadDashboard(token, false);
-    }, 10000);
+    }, 30000);
 
     return () => clearInterval(interval);
 
@@ -71,12 +75,12 @@ function Dashboard() {
 
       const data = res.data;
 
-      setKpis(data.kpis || {});
-      setForecast(data.forecast || []);
-      setPrediction(data.prediction || null);
-      setComparisonData(data.chart || []);
+      setKpis(data?.kpis || {});
+      setForecast(data?.forecast || []);
+      setPrediction(data?.prediction || null);
+      setComparisonData(data?.chart || []);
 
-      const results = data.anomaly?.results || [];
+      const results = data?.anomaly?.results ?? [];
 
       let low = 0;
       let medium = 0;
@@ -96,8 +100,9 @@ function Dashboard() {
         { name: "High Risk", value: high }
       ]);
 
-      setRisk(`Total Records Analysed: ${data.risk_records?.total_records || 0}`);
-      setBlockchain(data.blockchain?.status || "Unknown");
+      setRisk(`Total Records Analysed: ${data?.risk_records?.total_records || 0}`);
+
+      setBlockchain(data?.blockchain?.status || "Unknown");
 
     }
     catch (error) {
@@ -135,7 +140,8 @@ function Dashboard() {
         formData,
         {
           headers: {
-            Authorization: `Bearer ${token}`
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "multipart/form-data"
           }
         }
       );
@@ -173,7 +179,7 @@ function Dashboard() {
 
   const forecastChart = [...forecast];
 
-  if (prediction?.next_month_prediction) {
+  if (prediction && prediction.next_month_prediction !== undefined) {
 
     forecastChart.push({
       month: "Next",
@@ -203,7 +209,9 @@ function Dashboard() {
 
           <div className="security-card">
             <h3>Blockchain Integrity</h3>
-            <p>{blockchain}</p>
+            <p style={{ color: blockchain === "Valid" ? "#22c55e" : "#ef4444" }}>
+              {blockchain}
+            </p>
           </div>
 
         </div>
@@ -230,17 +238,17 @@ function Dashboard() {
 
           <div className="kpi-card">
             <h3>Total Revenue</h3>
-            <p>₹ {Number(kpis?.total_revenue || 0).toLocaleString()}</p>
+            <p>{formatCurrency(kpis?.total_revenue)}</p>
           </div>
 
           <div className="kpi-card">
             <h3>Total Expense</h3>
-            <p>₹ {Number(kpis?.total_expense || 0).toLocaleString()}</p>
+            <p>{formatCurrency(kpis?.total_expense)}</p>
           </div>
 
           <div className="kpi-card">
             <h3>Net Profit</h3>
-            <p>₹ {Number(kpis?.net_profit || 0).toLocaleString()}</p>
+            <p>{formatCurrency(kpis?.net_profit)}</p>
           </div>
 
         </div>

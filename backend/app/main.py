@@ -1257,13 +1257,25 @@ def revenue_forecast(user: dict = Depends(require_role(["admin","analyst","audit
 # =========================================
 
 @app.get("/chart-data")
-def chart_data(user: dict = Depends(require_role(["admin","analyst","auditor"]))):
+def chart_data(
+    user: dict = Depends(require_role(["admin","analyst","auditor"]))
+):
 
+    # 🔹 Get logged-in user
     current_user = users_collection.find_one({"username": user["sub"]})
 
-    data = list(financial_collection.find({
-        "user_id": str(current_user["_id"])
-    }))
+    if not current_user:
+        raise HTTPException(status_code=404, detail="User not found ❌")
+
+    # 🔹 Get financial data for that user
+    data = list(
+        financial_collection.find({
+            "user_id": str(current_user["_id"])
+        })
+    )
+
+    if not data:
+        return []
 
     today = datetime.today()
 
@@ -1272,10 +1284,22 @@ def chart_data(user: dict = Depends(require_role(["admin","analyst","auditor"]))
         for i in range(5, -1, -1)
     ]
 
-    revenues = [float(r["revenue"]) for r in data]
-    expenses = [float(r["expense"]) for r in data]
+    revenues = []
+    expenses = []
 
-    chunk_size = max(1, len(revenues)//6)
+    # 🔹 Safe data extraction
+    for r in data:
+        try:
+            revenues.append(float(r.get("revenue", 0)))
+        except:
+            revenues.append(0)
+
+        try:
+            expenses.append(float(r.get("expense", 0)))
+        except:
+            expenses.append(0)
+
+    chunk_size = max(1, len(revenues) // 6)
 
     result = []
 
@@ -1292,26 +1316,38 @@ def chart_data(user: dict = Depends(require_role(["admin","analyst","auditor"]))
 
     return result
 
+# =========================================
+# DASHBOARD DATA
+# =========================================
 
 # =========================================
 # DASHBOARD DATA
 # =========================================
 
 @app.get("/dashboard-data")
-def get_dashboard_data(user: dict = Depends(require_role(["admin","analyst","auditor"]))):
+def get_dashboard_data(
+    user: dict = Depends(require_role(["admin","analyst","auditor"]))
+):
 
+    # KPI
     kpis = get_kpis(user)
 
+    # Forecast graph (historical)
     forecast = revenue_forecast(user)
 
+    # Chart data
     chart = chart_data(user)
 
+    # ML prediction (Next Month)
     prediction = forecast_revenue(user)
 
+    # Risk classification (for Risk Distribution chart)
     anomaly = classify_risk_xgb(user)
 
+    # Hash ML results
     risk_records = hash_ml_results(user)
 
+    # Blockchain integrity
     blockchain_status = verify_integrity(user)
 
     return {
