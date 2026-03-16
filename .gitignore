@@ -1,0 +1,24 @@
+# Environment variables
+.env
+.env.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Python virtual environment
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# Build
+build/
+
+# ML models
+*.pkl
+
+# Logs
+*.log

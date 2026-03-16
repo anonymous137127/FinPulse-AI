@@ -1,9 +1,0 @@
-# Python
-.venv/
-venv/
-*.pyc
-*.pyo
-
-# FastAPI / Python environment
-.env
-.env.*
