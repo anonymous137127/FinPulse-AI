@@ -62,3 +62,6 @@ class Blockchain:
                 return False
 
         return True
+
+# 🔥 create global instance
+blockchain = Blockchain()
