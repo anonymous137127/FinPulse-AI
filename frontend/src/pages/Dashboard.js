@@ -18,8 +18,7 @@ import {
 } from "recharts";
 
 import "./Dashboard.css";
-
-const API_BASE = "https://finpulse-ai-1.onrender.com";
+import API_BASE from "../config";
 
 function Dashboard() {
 
@@ -61,20 +60,20 @@ function Dashboard() {
 
       if (showLoader) setLoading(true);
 
-      const headers = {
-        Authorization: `Bearer ${token}`
-      };
-
       const res = await axios.get(
         `${API_BASE}/dashboard-data`,
-        { headers }
+        {
+          headers: {
+            Authorization: `Bearer ${token}`
+          }
+        }
       );
 
       const data = res.data;
 
-      setKpis(data.kpis);
-      setForecast(data.forecast);
-      setPrediction(data.prediction);
+      setKpis(data.kpis || {});
+      setForecast(data.forecast || []);
+      setPrediction(data.prediction || null);
       setComparisonData(data.chart || []);
 
       const results = data.anomaly?.results || [];
@@ -104,6 +103,11 @@ function Dashboard() {
     catch (error) {
 
       console.error("Dashboard Load Error:", error);
+
+      if (error.response?.status === 401) {
+        localStorage.removeItem("token");
+        navigate("/");
+      }
 
     }
     finally {
@@ -169,7 +173,7 @@ function Dashboard() {
 
   const forecastChart = [...forecast];
 
-  if (prediction) {
+  if (prediction?.next_month_prediction) {
 
     forecastChart.push({
       month: "Next",
@@ -252,7 +256,12 @@ function Dashboard() {
               <YAxis />
               <Tooltip />
               <CartesianGrid stroke="#ccc" />
-              <Line type="monotone" dataKey="revenue" stroke="#3b82f6" strokeWidth={3}/>
+              <Line
+                type="monotone"
+                dataKey="revenue"
+                stroke="#3b82f6"
+                strokeWidth={3}
+              />
             </LineChart>
 
           </div>
@@ -272,13 +281,16 @@ function Dashboard() {
                 label
               >
 
-                {riskData.map((entry,index)=>(
-                  <Cell key={index} fill={COLORS[index % COLORS.length]} />
+                {riskData.map((entry, index) => (
+                  <Cell
+                    key={index}
+                    fill={COLORS[index % COLORS.length]}
+                  />
                 ))}
 
               </Pie>
 
-              <Tooltip/>
+              <Tooltip />
 
             </PieChart>
 
@@ -292,18 +304,16 @@ function Dashboard() {
 
           <BarChart width={700} height={300} data={comparisonData}>
 
-            <CartesianGrid strokeDasharray="3 3"/>
+            <CartesianGrid strokeDasharray="3 3" />
 
-            <XAxis dataKey="month"/>
+            <XAxis dataKey="month" />
+            <YAxis />
 
-            <YAxis/>
+            <Tooltip />
+            <Legend />
 
-            <Tooltip/>
-
-            <Legend/>
-
-            <Bar dataKey="revenue" fill="#6366f1"/>
-            <Bar dataKey="expense" fill="#22c55e"/>
+            <Bar dataKey="revenue" fill="#6366f1" />
+            <Bar dataKey="expense" fill="#22c55e" />
 
           </BarChart>
 

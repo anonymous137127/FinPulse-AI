@@ -4,7 +4,7 @@ import { useNavigate, Link } from "react-router-dom";
 import "./Login.css";
 
 // Backend API
-const API_BASE = "https://finpulse-ai-1.onrender.com";
+import API_BASE from "../config";
 
 function Register() {
 
@@ -47,9 +47,10 @@ function Register() {
 
       setMessage("✅ Registration successful");
 
+      // Redirect to login
       setTimeout(() => {
         navigate("/");
-      }, 1200);
+      }, 1000);
 
     } catch (error) {
 
@@ -58,11 +59,13 @@ function Register() {
       if (error.response) {
         setMessage(error.response.data.detail || "❌ Registration failed");
       } else {
-        setMessage("❌ Network error. Please try again.");
+        setMessage("❌ Server not reachable");
       }
 
     } finally {
+
       setLoading(false);
+
     }
 
   };
@@ -76,7 +79,11 @@ function Register() {
         <h2 className="title">FinPulse</h2>
         <p className="subtitle">Create your account</p>
 
-        {message && <div className="popup">{message}</div>}
+        {message && (
+          <div className="popup">
+            {message}
+          </div>
+        )}
 
         <form onSubmit={handleRegister}>
 

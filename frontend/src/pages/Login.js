@@ -4,7 +4,7 @@ import { useNavigate, Link } from "react-router-dom";
 import "./Login.css";
 
 // Backend API
-const API_BASE = "https://finpulse-ai-1.onrender.com";
+import API_BASE from "../config";
 
 function Login() {
 
@@ -29,8 +29,8 @@ function Login() {
         null,
         {
           params: {
-            username: username,
-            password: password
+            username: username.trim(),
+            password: password.trim()
           }
         }
       );
@@ -40,14 +40,20 @@ function Login() {
 
       setMessage("✅ Login Successful");
 
+      // Redirect to dashboard
       setTimeout(() => {
         navigate("/dashboard");
-      }, 1200);
+      }, 1000);
 
     } catch (error) {
 
-      console.error(error);
-      setMessage("❌ Invalid username or password");
+      console.error("Login error:", error);
+
+      if (error.response) {
+        setMessage(error.response.data.detail || "❌ Login failed");
+      } else {
+        setMessage("❌ Server not reachable");
+      }
 
     }
   };
@@ -85,7 +91,11 @@ function Login() {
 
         </form>
 
-        {message && <div className="popup">{message}</div>}
+        {message && (
+          <div className="popup">
+            {message}
+          </div>
+        )}
 
         <p className="register-text">
           Don't have an account? <Link to="/register">Register</Link>
@@ -96,16 +106,14 @@ function Login() {
       <div className="security-text">
         <div className="scroll-text">
           🔐 Secure Financial Analytics System •
-          ⚡ AI-Powered Revenue Forecasting •
+          ⚡ AI‑Powered Revenue Forecasting •
           📊 Financial Risk Detection Engine •
           ⛓ Blockchain Integrity Verification •
         </div>
       </div>
 
     </div>
-
   );
-
 }
 
 export default Login;

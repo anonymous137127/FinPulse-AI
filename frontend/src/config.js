@@ -1,1 +1,3 @@
-export const API_BASE = "https://finpulse-ai-1.onrender.com";
+const API_BASE = process.env.REACT_APP_API_BASE;
+
+export default API_BASE;

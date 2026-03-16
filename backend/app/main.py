@@ -31,6 +31,11 @@ import hashlib
 import json
 from time import time
 
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # MongoDB
 
 from app.mongodb import (
@@ -731,6 +736,7 @@ def classify_risk_xgb(
             status_code=500,
             detail=f"Risk classification failed: {str(e)}"
         )
+    
 # ---------------- FORECAST API ----------------
 
 @app.get("/forecast")
