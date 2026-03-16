@@ -1,18 +1,14 @@
 import os
+from pymongo import MongoClient
 from dotenv import load_dotenv
-from pymongo.mongo_client import MongoClient
-from pymongo.server_api import ServerApi
 
 load_dotenv()
 
-# Get values from .env
 MONGO_URI = os.getenv("MONGO_URI")
 DATABASE_NAME = os.getenv("DATABASE_NAME")
 
-# MongoDB Client
-client = MongoClient(MONGO_URI, server_api=ServerApi('1'))
+client = MongoClient(MONGO_URI)
 
-# Database
 db = client[DATABASE_NAME]
 
 # Collections
