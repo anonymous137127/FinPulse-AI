@@ -61,6 +61,80 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES"))
 
 security = HTTPBearer()
 
+
+# ---------------- AUTH ----------------
+
+def create_access_token(data: dict):
+
+    to_encode = data.copy()
+
+    expire = datetime.utcnow() + timedelta(
+        minutes=ACCESS_TOKEN_EXPIRE_MINUTES
+    )
+
+    to_encode.update({"exp": expire})
+
+    encoded_jwt = jwt.encode(
+        to_encode,
+        SECRET_KEY,
+        algorithm=ALGORITHM
+    )
+
+    return encoded_jwt
+
+
+# ---------------- TOKEN VERIFICATION ----------------
+
+def verify_token(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+
+    token = credentials.credentials
+
+    try:
+
+        payload = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM]
+        )
+
+        return payload
+
+    except jwt.ExpiredSignatureError:
+
+        raise HTTPException(
+            status_code=401,
+            detail="Token expired ❌"
+        )
+
+    except jwt.JWTError:
+
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid token ❌"
+        )
+
+
+# ---------------- ROLE AUTHORIZATION ----------------
+
+def require_role(roles: list):
+
+    def role_checker(user: dict = Depends(verify_token)):
+
+        user_role = user.get("role")
+
+        if user_role not in roles:
+
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied ❌"
+            )
+
+        return user
+
+    return role_checker
+
 # FASTAPI APP
 
 app = FastAPI(title="FinPulse API 🚀")
@@ -89,45 +163,6 @@ def mongo_test():
     users_collection.insert_one(data)
 
     return {"status": "MongoDB Insert Success"}
-
-# ---------------- JWT TOKEN CREATION ----------------
-
-def create_access_token(data: dict):
-
-    to_encode = data.copy()
-
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-
-    to_encode.update({"exp": expire})
-
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-    return encoded_jwt
-
-
-# ---------------- ROLE AUTHORIZATION ----------------
-
-def require_role(allowed_roles: list):
-
-    def role_checker(credentials: HTTPAuthorizationCredentials = Depends(security)):
-
-        token = credentials.credentials
-
-        try:
-
-            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-
-            user_role = payload.get("role")
-
-            if user_role not in allowed_roles:
-                raise HTTPException(status_code=403, detail="Access denied ❌")
-
-            return payload
-
-        except Exception:
-            raise HTTPException(status_code=401, detail="Invalid or expired token ❌")
-
-    return role_checker
 
 # ---------------- REGISTER ----------------
 
