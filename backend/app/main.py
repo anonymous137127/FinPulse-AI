@@ -1078,44 +1078,63 @@ def chart_data(
         })
 
     return result
-
-# DASHBOARD DATA
-
 @app.get("/dashboard-data")
 def get_dashboard_data(
     user: dict = Depends(require_role(["admin","analyst","auditor"]))
 ):
 
-    # KPI
-    kpis = get_kpis(user)
+    response = {}
 
-    # Forecast graph (historical)
-    forecast = revenue_forecast(user)
+    # KPI
+    try:
+        response["kpis"] = get_kpis(user)
+    except Exception as e:
+        response["kpis"] = {}
+        print("KPI Error:", e)
+
+    # Forecast graph
+    try:
+        response["forecast"] = revenue_forecast(user)
+    except Exception as e:
+        response["forecast"] = []
+        print("Forecast Error:", e)
 
     # Chart data
-    chart = chart_data(user)
+    try:
+        response["chart"] = chart_data(user)
+    except Exception as e:
+        response["chart"] = []
+        print("Chart Error:", e)
 
-    # ML prediction (Next Month)
-    prediction = forecast_revenue(user)
+    # Prediction
+    try:
+        response["prediction"] = forecast_revenue(user)
+    except Exception as e:
+        response["prediction"] = {}
+        print("Prediction Error:", e)
 
-    # Risk classification (for Risk Distribution chart)
-    anomaly = classify_risk_xgb(user)
+    # ⚠️ ML Risk (heavy → protect it)
+    try:
+        response["anomaly"] = classify_risk_xgb(user)
+    except Exception as e:
+        response["anomaly"] = {"results": []}
+        print("ML Error:", e)
 
-    # Hash ML results
-    risk_records = hash_ml_results(user)
+    # Hash
+    try:
+        response["risk_records"] = hash_ml_results(user)
+    except Exception as e:
+        response["risk_records"] = {}
+        print("Hash Error:", e)
 
-    # Blockchain integrity
-    blockchain_status = verify_integrity(user)
+    # Blockchain
+    try:
+        response["blockchain"] = verify_integrity(user)
+    except Exception as e:
+        response["blockchain"] = {}
+        print("Blockchain Error:", e)
 
-    return {
-        "kpis": kpis,
-        "forecast": forecast,
-        "prediction": prediction,
-        "chart": chart,
-        "anomaly": anomaly,
-        "risk_records": risk_records,
-        "blockchain": blockchain_status
-    }
+    return response
 
 @app.get("/reset-blockchain")
 def reset_blockchain():
