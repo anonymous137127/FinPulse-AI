@@ -24,7 +24,7 @@ function Dashboard() {
 
   const navigate = useNavigate();
 
-  const [kpis, setKpis] = useState({});
+  const [kpis, setKpis] = useState(null);
   const [forecast, setForecast] = useState([]);
   const [prediction, setPrediction] = useState(null);
   const [blockchain, setBlockchain] = useState("Unknown");
@@ -80,24 +80,25 @@ function Dashboard() {
       setPrediction(data?.prediction || null);
       setComparisonData(data?.chart || []);
 
-      // ✅ FIXED RISK DATA (NEW BACKEND FORMAT)
+      // ✅ RISK DATA FIX (SAFE + ALWAYS SHOW)
       const anomaly = data?.anomaly || {};
 
       const low = anomaly.low || 0;
       const medium = anomaly.medium || 0;
       const high = anomaly.high || 0;
 
-      setRiskData([
+      const riskArr = [
         { name: "Low Risk", value: low },
         { name: "Medium Risk", value: medium },
         { name: "High Risk", value: high }
-      ]);
+      ];
 
-      // ✅ BLOCKCHAIN STATUS
+      setRiskData(riskArr);
+
+      // ✅ BLOCKCHAIN
       setBlockchain(data?.blockchain?.status || "Unknown");
 
-    }
-    catch (error) {
+    } catch (error) {
 
       console.error("Dashboard Load Error:", error);
 
@@ -106,8 +107,7 @@ function Dashboard() {
         navigate("/");
       }
 
-    }
-    finally {
+    } finally {
 
       if (showLoader) setLoading(false);
 
@@ -140,10 +140,14 @@ function Dashboard() {
 
       alert("CSV uploaded successfully ✅");
 
+      // 🔥 OPTIONAL: Run ML automatically after upload
+      await axios.get(`${API_BASE}/classify-risk-xgb`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
       loadDashboard(token);
 
-    }
-    catch (error) {
+    } catch (error) {
 
       console.error("Upload error:", error);
       alert("CSV upload failed ❌");
@@ -157,7 +161,7 @@ function Dashboard() {
     navigate("/");
   };
 
-  // ✅ LOADING UI FIX
+  // ✅ LOADING STATE
   if (loading && !kpis) {
     return (
       <h2 style={{ textAlign: "center", marginTop: "120px" }}>
@@ -269,25 +273,32 @@ function Dashboard() {
 
             <h3>Risk Distribution</h3>
 
-            <PieChart width={350} height={300}>
-              <Pie
-                data={riskData}
-                dataKey="value"
-                cx="50%"
-                cy="50%"
-                outerRadius={100}
-                label
-              >
-                {riskData.map((entry, index) => (
-                  <Cell
-                    key={index}
-                    fill={COLORS[index % COLORS.length]}
-                  />
-                ))}
-              </Pie>
+            {/* ✅ EMPTY SAFE FIX */}
+            {riskData.every(r => r.value === 0) ? (
+              <p style={{ textAlign: "center", marginTop: "80px" }}>
+                No risk data available
+              </p>
+            ) : (
+              <PieChart width={350} height={300}>
+                <Pie
+                  data={riskData}
+                  dataKey="value"
+                  cx="50%"
+                  cy="50%"
+                  outerRadius={100}
+                  label
+                >
+                  {riskData.map((entry, index) => (
+                    <Cell
+                      key={index}
+                      fill={COLORS[index % COLORS.length]}
+                    />
+                  ))}
+                </Pie>
 
-              <Tooltip />
-            </PieChart>
+                <Tooltip />
+              </PieChart>
+            )}
 
           </div>
 

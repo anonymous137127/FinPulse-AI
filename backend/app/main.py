@@ -358,14 +358,17 @@ def forecast_revenue(
     if not current_user:
         raise HTTPException(status_code=404, detail="User not found ❌")
 
-    # 🔹 Get user's financial data (ONLY real data)
+    user_id = str(current_user["_id"])
+
+    # 🔹 Get ONLY real financial data (exclude forecast records)
     data = list(
         financial_collection.find({
-            "user_id": str(current_user["_id"]),
-            "type": {"$ne": "forecast_result"}   # ✅ IMPORTANT FIX
+            "user_id": user_id,
+            "type": {"$ne": "forecast_result"}
         })
     )
 
+    # 🔹 Minimum data check
     if len(data) < 5:
         return {
             "next_month_prediction": 0,
@@ -373,11 +376,11 @@ def forecast_revenue(
             "months_used_for_training": []
         }
 
+    # 🔹 Extract revenues safely
     revenues = []
-
     for row in data:
         try:
-            revenues.append(float(row["revenue"]))
+            revenues.append(float(row.get("revenue", 0)))
         except:
             continue
 
@@ -392,7 +395,6 @@ def forecast_revenue(
     chunk_size = max(1, len(revenues) // 6)
 
     monthly_totals = []
-
     for i in range(6):
         start = i * chunk_size
         end = start + chunk_size
@@ -422,10 +424,10 @@ def forecast_revenue(
     # 🔹 Save model (optional)
     joblib.dump(model, "revenue_model.pkl")
 
-    # ✅ FIXED: Use UPDATE instead of INSERT (NO DUPLICATES)
+    # ✅ SAFE DB UPDATE (NO DUPLICATE RECORDS EVER)
     financial_collection.update_one(
         {
-            "user_id": str(current_user["_id"]),
+            "user_id": user_id,
             "type": "forecast_result"
         },
         {
@@ -435,9 +437,10 @@ def forecast_revenue(
                 "created_at": datetime.utcnow()
             }
         },
-        upsert=True   # create if not exists
+        upsert=True
     )
 
+    # 🔹 FINAL RESPONSE
     return {
         "next_month_prediction": round(float(prediction), 2),
         "model_accuracy_r2": round(float(accuracy), 4),
@@ -1093,15 +1096,13 @@ def get_dashboard_data(
         "anomaly": {
             "high": 0,
             "medium": 0,
-            "low": 0,
-            "total": 0
+            "low": 0
         },
-        "risk_records": {},
         "blockchain": {}
     }
 
     try:
-        # 🔹 Get logged-in user (IMPORTANT FIX)
+        # 🔹 Get logged-in user
         current_user = users_collection.find_one({"username": user["sub"]})
 
         if not current_user:
@@ -1127,18 +1128,26 @@ def get_dashboard_data(
         except Exception as e:
             print("Chart Error:", e)
 
-        # ---------------- Prediction ----------------
+        # ---------------- Prediction (READ ONLY) ----------------
         try:
-            # ⚠️ Make sure forecast_revenue DOES NOT insert into DB
-            response["prediction"] = forecast_revenue(user)
+            prediction_data = financial_collection.find_one({
+                "user_id": user_id,
+                "type": "forecast_result"
+            })
+
+            if prediction_data:
+                response["prediction"] = {
+                    "next_month_prediction": prediction_data.get("prediction", 0),
+                    "model_accuracy_r2": prediction_data.get("accuracy", 0)
+                }
         except Exception as e:
             print("Prediction Error:", e)
 
-        # ---------------- Risk (FAST DB READ) ----------------
+        # ---------------- RISK (ONLY COUNT) ----------------
         try:
             data = list(financial_collection.find({
                 "user_id": user_id,
-                "type": {"$ne": "forecast_result"}  # ✅ avoid fake records
+                "type": {"$ne": "forecast_result"}
             }))
 
             high = sum(1 for r in data if r.get("risk_level") == "High")
@@ -1148,20 +1157,13 @@ def get_dashboard_data(
             response["anomaly"] = {
                 "high": high,
                 "medium": medium,
-                "low": low,
-                "total": len(data)
+                "low": low
             }
 
         except Exception as e:
             print("Risk Error:", e)
 
-        # ---------------- Hash ----------------
-        try:
-            response["risk_records"] = hash_ml_results(user)
-        except Exception as e:
-            print("Hash Error:", e)
-
-        # ---------------- Blockchain ----------------
+        # ---------------- BLOCKCHAIN ----------------
         try:
             response["blockchain"] = verify_integrity(user)
         except Exception as e:
