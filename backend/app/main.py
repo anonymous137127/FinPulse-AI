@@ -258,8 +258,6 @@ def login(username: str, password: str):
         "username": user["username"],
         "role": user["role"]
     }
-# ---------------- UNIVERSAL CSV ETL (MongoDB Version) ----------------
-
 @app.post("/upload-csv")
 def upload_csv(
     file: UploadFile = File(...),
@@ -269,34 +267,34 @@ def upload_csv(
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only CSV files allowed ❌")
 
-    # get current user from MongoDB
+    # 🔹 Get user
     current_user = users_collection.find_one({"username": user["sub"]})
 
     if not current_user:
         raise HTTPException(status_code=404, detail="User not found ❌")
 
-    # delete previous user data
+    user_id = str(current_user["_id"])
+
+    # 🔹 Delete old data (clean reset)
     financial_collection.delete_many({
-        "user_id": str(current_user["_id"])
+        "user_id": user_id
     })
 
     rows_inserted = 0
 
     try:
-
         df = pd.read_csv(file.file)
 
-        # clean column names
+        # 🔹 Clean column names
         df.columns = df.columns.str.strip().str.lower()
 
-        # remove currency symbols
+        # 🔹 Remove currency symbols
         df = df.replace(r'[\$,₹]', '', regex=True)
 
-        # detect numeric columns automatically
+        # 🔹 Detect numeric columns
         numeric_cols = []
 
         for col in df.columns:
-
             converted = pd.to_numeric(df[col], errors="coerce")
 
             if converted.notna().sum() > 0:
@@ -323,7 +321,7 @@ def upload_csv(
                 continue
 
             records.append({
-                "user_id": str(current_user["_id"]),
+                "user_id": user_id,
                 "revenue": float(revenue),
                 "expense": float(expense),
                 "created_at": datetime.utcnow()
@@ -334,15 +332,28 @@ def upload_csv(
 
         rows_inserted = len(records)
 
-    except Exception as e:
+        # =====================================================
+        # 🔥 IMPORTANT: RUN ML AFTER UPLOAD (FIX YOUR PROBLEM)
+        # =====================================================
 
+        try:
+            classify_risk_xgb(user)   # ✅ generate risk_level
+        except Exception as e:
+            print("Risk ML Error:", e)
+
+        try:
+            forecast_revenue(user)    # ✅ generate prediction
+        except Exception as e:
+            print("Forecast ML Error:", e)
+
+    except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=f"CSV processing error: {str(e)}"
         )
 
     return {
-        "message": "CSV uploaded successfully ✅",
+        "message": "CSV uploaded + AI analysis completed ✅",
         "rows_inserted": rows_inserted
     }
 # ---------------- REVENUE FORECAST ----------------
@@ -1083,112 +1094,68 @@ def chart_data(
         })
 
     return result
-
 @app.get("/dashboard-data")
 def get_dashboard_data(
     user: dict = Depends(require_role(["admin","analyst","auditor"]))
 ):
 
-    response = {
-        "kpis": {},
-        "forecast": [],
-        "chart": [],
-        "prediction": {
-            "next_month_prediction": 0,
-            "model_accuracy_r2": 0
-        },
-        "anomaly": {
-            "high": 0,
-            "medium": 0,
-            "low": 0
-        },
-        "blockchain": {
-            "status": "Unknown"
-        }
+    current_user = users_collection.find_one({"username": user["sub"]})
+
+    if not current_user:
+        raise HTTPException(status_code=404, detail="User not found ❌")
+
+    user_id = str(current_user["_id"])
+
+    # ---------------- KPI ----------------
+    kpis = get_kpis(user)
+
+    # ---------------- FORECAST GRAPH ----------------
+    forecast = revenue_forecast(user)
+
+    # ---------------- CHART ----------------
+    chart = chart_data(user)
+
+    # ---------------- ✅ PREDICTION (READ FROM DB) ----------------
+    prediction_doc = financial_collection.find_one({
+        "user_id": user_id,
+        "type": "forecast_result"
+    })
+
+    prediction = {
+        "next_month_prediction": 0,
+        "model_accuracy_r2": 0
     }
 
-    try:
-        # 🔹 Get logged-in user
-        current_user = users_collection.find_one({"username": user["sub"]})
+    if prediction_doc:
+        prediction = {
+            "next_month_prediction": prediction_doc.get("prediction", 0),
+            "model_accuracy_r2": prediction_doc.get("accuracy", 0)
+        }
 
-        if not current_user:
-            raise HTTPException(status_code=404, detail="User not found ❌")
+    # ---------------- ✅ RISK (READ ONLY) ----------------
+    data = list(financial_collection.find({
+        "user_id": user_id,
+        "type": {"$ne": "forecast_result"}
+    }))
 
-        user_id = str(current_user["_id"])
+    high = sum(1 for r in data if r.get("risk_level") == "High")
+    medium = sum(1 for r in data if r.get("risk_level") == "Medium")
+    low = sum(1 for r in data if r.get("risk_level") == "Low")
 
-        # ---------------- KPI ----------------
-        try:
-            response["kpis"] = get_kpis(user)
-        except Exception as e:
-            print("KPI Error:", e)
+    anomaly = {
+        "high": high,
+        "medium": medium,
+        "low": low
+    }
 
-        # ---------------- Forecast Graph ----------------
-        try:
-            response["forecast"] = revenue_forecast(user)
-        except Exception as e:
-            print("Forecast Error:", e)
+    # ---------------- BLOCKCHAIN ----------------
+    blockchain = verify_integrity(user)
 
-        # ---------------- Chart Data ----------------
-        try:
-            response["chart"] = chart_data(user)
-        except Exception as e:
-            print("Chart Error:", e)
-
-        # ---------------- ✅ FIX 1: PREDICTION ----------------
-        try:
-            prediction_data = financial_collection.find_one({
-                "user_id": user_id,
-                "type": "forecast_result"
-            })
-
-            if prediction_data:
-                response["prediction"] = {
-                    "next_month_prediction": float(prediction_data.get("prediction", 0)),
-                    "model_accuracy_r2": float(prediction_data.get("accuracy", 0))
-                }
-        except Exception as e:
-            print("Prediction Error:", e)
-
-        # ---------------- ✅ FIX 2: RISK COUNT ----------------
-        try:
-            data = list(financial_collection.find({
-                "user_id": user_id,
-                "type": {"$ne": "forecast_result"}
-            }))
-
-            high = 0
-            medium = 0
-            low = 0
-
-            for r in data:
-                risk = r.get("risk_level")
-
-                if risk == "High":
-                    high += 1
-                elif risk == "Medium":
-                    medium += 1
-                elif risk == "Low":
-                    low += 1
-
-            response["anomaly"] = {
-                "high": high,
-                "medium": medium,
-                "low": low
-            }
-
-        except Exception as e:
-            print("Risk Error:", e)
-
-        # ---------------- ✅ FIX 3: BLOCKCHAIN ----------------
-        try:
-            bc = verify_integrity(user)
-            response["blockchain"] = {
-                "status": bc.get("status", "Unknown")
-            }
-        except Exception as e:
-            print("Blockchain Error:", e)
-
-    except Exception as main_error:
-        print("Dashboard Error:", main_error)
-
-    return response
+    return {
+        "kpis": kpis,
+        "forecast": forecast,
+        "prediction": prediction,
+        "chart": chart,
+        "anomaly": anomaly,
+        "blockchain": blockchain
+    }
