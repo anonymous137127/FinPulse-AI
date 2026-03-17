@@ -1078,7 +1078,6 @@ def chart_data(
         })
 
     return result
-
 @app.get("/dashboard-data")
 def get_dashboard_data(
     user: dict = Depends(require_role(["admin","analyst","auditor"]))
@@ -1089,66 +1088,84 @@ def get_dashboard_data(
         "forecast": [],
         "chart": [],
         "prediction": {},
-        "anomaly": {"results": []},
+        "anomaly": {
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+            "total": 0
+        },
         "risk_records": {},
         "blockchain": {}
     }
 
-    # KPI
     try:
-        response["kpis"] = get_kpis(user)
-    except Exception as e:
-        print("KPI Error:", e)
+        # 🔹 Get logged-in user (IMPORTANT FIX)
+        current_user = users_collection.find_one({"username": user["sub"]})
 
-    # Forecast graph
-    try:
-        response["forecast"] = revenue_forecast(user)
-    except Exception as e:
-        print("Forecast Error:", e)
+        if not current_user:
+            raise HTTPException(status_code=404, detail="User not found ❌")
 
-    # Chart data
-    try:
-        response["chart"] = chart_data(user)
-    except Exception as e:
-        print("Chart Error:", e)
+        user_id = str(current_user["_id"])
 
-    # Prediction (light)
-    try:
-        response["prediction"] = forecast_revenue(user)
-    except Exception as e:
-        print("Prediction Error:", e)
+        # ---------------- KPI ----------------
+        try:
+            response["kpis"] = get_kpis(user)
+        except Exception as e:
+            print("KPI Error:", e)
 
-    # 🚨 IMPORTANT: Do NOT run heavy ML every time
-    # Instead: read already stored risk from DB
-    try:
-        data = list(financial_collection.find({
-            "user_id": str(user.get("sub"))
-        }))
+        # ---------------- Forecast Graph ----------------
+        try:
+            response["forecast"] = revenue_forecast(user)
+        except Exception as e:
+            print("Forecast Error:", e)
 
-        high = sum(1 for r in data if r.get("risk_level") == "High")
-        medium = sum(1 for r in data if r.get("risk_level") == "Medium")
-        low = sum(1 for r in data if r.get("risk_level") == "Low")
+        # ---------------- Chart Data ----------------
+        try:
+            response["chart"] = chart_data(user)
+        except Exception as e:
+            print("Chart Error:", e)
 
-        response["anomaly"] = {
-            "high": high,
-            "medium": medium,
-            "low": low,
-            "total": len(data)
-        }
+        # ---------------- Prediction ----------------
+        try:
+            # ⚠️ Make sure forecast_revenue DOES NOT insert into DB
+            response["prediction"] = forecast_revenue(user)
+        except Exception as e:
+            print("Prediction Error:", e)
 
-    except Exception as e:
-        print("Risk Read Error:", e)
+        # ---------------- Risk (FAST DB READ) ----------------
+        try:
+            data = list(financial_collection.find({
+                "user_id": user_id,
+                "type": {"$ne": "forecast_result"}  # ✅ avoid fake records
+            }))
 
-    # Hash
-    try:
-        response["risk_records"] = hash_ml_results(user)
-    except Exception as e:
-        print("Hash Error:", e)
+            high = sum(1 for r in data if r.get("risk_level") == "High")
+            medium = sum(1 for r in data if r.get("risk_level") == "Medium")
+            low = sum(1 for r in data if r.get("risk_level") == "Low")
 
-    # Blockchain
-    try:
-        response["blockchain"] = verify_integrity(user)
-    except Exception as e:
-        print("Blockchain Error:", e)
+            response["anomaly"] = {
+                "high": high,
+                "medium": medium,
+                "low": low,
+                "total": len(data)
+            }
+
+        except Exception as e:
+            print("Risk Error:", e)
+
+        # ---------------- Hash ----------------
+        try:
+            response["risk_records"] = hash_ml_results(user)
+        except Exception as e:
+            print("Hash Error:", e)
+
+        # ---------------- Blockchain ----------------
+        try:
+            response["blockchain"] = verify_integrity(user)
+        except Exception as e:
+            print("Blockchain Error:", e)
+
+    except Exception as main_error:
+        print("Dashboard Error:", main_error)
 
     return response
