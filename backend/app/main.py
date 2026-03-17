@@ -345,7 +345,6 @@ def upload_csv(
         "message": "CSV uploaded successfully ✅",
         "rows_inserted": rows_inserted
     }
-
 # ---------------- REVENUE FORECAST ----------------
 
 @app.get("/forecast-revenue")
@@ -353,17 +352,18 @@ def forecast_revenue(
     user: dict = Depends(require_role(["admin","analyst","auditor"]))
 ):
 
-    # get logged in user from MongoDB
+    # 🔹 Get logged-in user
     current_user = users_collection.find_one({"username": user["sub"]})
 
     if not current_user:
         raise HTTPException(status_code=404, detail="User not found ❌")
 
-    # get user's financial data
+    # 🔹 Get user's financial data (ONLY real data)
     data = list(
-        financial_collection.find(
-            {"user_id": str(current_user["_id"])}
-        )
+        financial_collection.find({
+            "user_id": str(current_user["_id"]),
+            "type": {"$ne": "forecast_result"}   # ✅ IMPORTANT FIX
+        })
     )
 
     if len(data) < 5:
@@ -389,7 +389,6 @@ def forecast_revenue(
         }
 
     # ---------------- GROUP INTO 6 MONTHS ----------------
-
     chunk_size = max(1, len(revenues) // 6)
 
     monthly_totals = []
@@ -402,7 +401,6 @@ def forecast_revenue(
     monthly_totals = np.array(monthly_totals)
 
     # ---------------- TRAIN MODEL ----------------
-
     X = np.arange(len(monthly_totals)).reshape(-1, 1)
     y = monthly_totals
 
@@ -414,33 +412,37 @@ def forecast_revenue(
     model.fit(X_train, y_train)
 
     # ---------------- EVALUATE ----------------
-
     y_pred = model.predict(X_test)
     accuracy = r2_score(y_test, y_pred)
 
     # ---------------- PREDICT NEXT MONTH ----------------
-
     next_index = np.array([[len(monthly_totals)]])
     prediction = model.predict(next_index)[0]
 
-    # save model
+    # 🔹 Save model (optional)
     joblib.dump(model, "revenue_model.pkl")
 
-    # store prediction in MongoDB
-    financial_collection.insert_one({
-        "type": "forecast_result",
-        "user_id": str(current_user["_id"]),
-        "prediction": float(round(prediction, 2)),
-        "accuracy": float(round(accuracy, 4)),
-        "created_at": datetime.utcnow()
-    })
+    # ✅ FIXED: Use UPDATE instead of INSERT (NO DUPLICATES)
+    financial_collection.update_one(
+        {
+            "user_id": str(current_user["_id"]),
+            "type": "forecast_result"
+        },
+        {
+            "$set": {
+                "prediction": float(round(prediction, 2)),
+                "accuracy": float(round(accuracy, 4)),
+                "created_at": datetime.utcnow()
+            }
+        },
+        upsert=True   # create if not exists
+    )
 
     return {
         "next_month_prediction": round(float(prediction), 2),
         "model_accuracy_r2": round(float(accuracy), 4),
         "months_used_for_training": monthly_totals.tolist()
     }
-
 # ---------------- XGBOOST RISK CLASSIFICATION ----------------
 
 @app.get("/classify-risk-xgb")
