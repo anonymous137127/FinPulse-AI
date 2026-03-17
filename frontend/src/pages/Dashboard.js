@@ -27,7 +27,6 @@ function Dashboard() {
   const [kpis, setKpis] = useState({});
   const [forecast, setForecast] = useState([]);
   const [prediction, setPrediction] = useState(null);
-  const [risk, setRisk] = useState("");
   const [blockchain, setBlockchain] = useState("Unknown");
   const [riskData, setRiskData] = useState([]);
   const [comparisonData, setComparisonData] = useState([]);
@@ -52,7 +51,7 @@ function Dashboard() {
 
     const interval = setInterval(() => {
       loadDashboard(token, false);
-    }, 30000);
+    }, 60000); // every 1 min
 
     return () => clearInterval(interval);
 
@@ -75,24 +74,18 @@ function Dashboard() {
 
       const data = res.data;
 
+      // ✅ BASIC DATA
       setKpis(data?.kpis || {});
       setForecast(data?.forecast || []);
       setPrediction(data?.prediction || null);
       setComparisonData(data?.chart || []);
 
-      const results = data?.anomaly?.results ?? [];
+      // ✅ FIXED RISK DATA (NEW BACKEND FORMAT)
+      const anomaly = data?.anomaly || {};
 
-      let low = 0;
-      let medium = 0;
-      let high = 0;
-
-      results.forEach(item => {
-
-        if (item.classified_risk === "Low") low++;
-        else if (item.classified_risk === "Medium") medium++;
-        else if (item.classified_risk === "High") high++;
-
-      });
+      const low = anomaly.low || 0;
+      const medium = anomaly.medium || 0;
+      const high = anomaly.high || 0;
 
       setRiskData([
         { name: "Low Risk", value: low },
@@ -100,8 +93,7 @@ function Dashboard() {
         { name: "High Risk", value: high }
       ]);
 
-      setRisk(`Total Records Analysed: ${data?.risk_records?.total_records || 0}`);
-
+      // ✅ BLOCKCHAIN STATUS
       setBlockchain(data?.blockchain?.status || "Unknown");
 
     }
@@ -161,31 +153,35 @@ function Dashboard() {
   };
 
   const logout = () => {
-
     localStorage.removeItem("token");
     navigate("/");
-
   };
 
-  if (loading) {
-
+  // ✅ LOADING UI FIX
+  if (loading && !kpis) {
     return (
       <h2 style={{ textAlign: "center", marginTop: "120px" }}>
         Loading Financial Analytics Dashboard...
       </h2>
     );
+  }
 
+  // ✅ EMPTY STATE
+  if (!forecast.length && !comparisonData.length) {
+    return (
+      <h2 style={{ textAlign: "center", marginTop: "120px" }}>
+        Upload CSV to view dashboard 📊
+      </h2>
+    );
   }
 
   const forecastChart = [...forecast];
 
   if (prediction && prediction.next_month_prediction !== undefined) {
-
     forecastChart.push({
       month: "Next",
       revenue: prediction.next_month_prediction
     });
-
   }
 
   return (
@@ -196,15 +192,13 @@ function Dashboard() {
 
         <h2>FinPulse</h2>
 
-        <button onClick={logout}>
-          Logout
-        </button>
+        <button onClick={logout}>Logout</button>
 
         <div className="sidebar-security">
 
           <div className="security-card">
             <h3>Records Analysed</h3>
-            <p>{risk}</p>
+            <p>{riskData.reduce((a, b) => a + b.value, 0)}</p>
           </div>
 
           <div className="security-card">
@@ -223,15 +217,12 @@ function Dashboard() {
         <h1>Financial Analytics Dashboard</h1>
 
         <div className="upload-box">
-
           <h3>Upload Financial CSV</h3>
-
           <input
             type="file"
             accept=".csv"
             onChange={uploadCSV}
           />
-
         </div>
 
         <div className="kpi-container">
@@ -279,7 +270,6 @@ function Dashboard() {
             <h3>Risk Distribution</h3>
 
             <PieChart width={350} height={300}>
-
               <Pie
                 data={riskData}
                 dataKey="value"
@@ -288,18 +278,15 @@ function Dashboard() {
                 outerRadius={100}
                 label
               >
-
                 {riskData.map((entry, index) => (
                   <Cell
                     key={index}
                     fill={COLORS[index % COLORS.length]}
                   />
                 ))}
-
               </Pie>
 
               <Tooltip />
-
             </PieChart>
 
           </div>
@@ -311,18 +298,13 @@ function Dashboard() {
           <h3>Revenue vs Expense</h3>
 
           <BarChart width={700} height={300} data={comparisonData}>
-
             <CartesianGrid strokeDasharray="3 3" />
-
             <XAxis dataKey="month" />
             <YAxis />
-
             <Tooltip />
             <Legend />
-
             <Bar dataKey="revenue" fill="#6366f1" />
             <Bar dataKey="expense" fill="#22c55e" />
-
           </BarChart>
 
         </div>

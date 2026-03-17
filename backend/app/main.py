@@ -1078,75 +1078,77 @@ def chart_data(
         })
 
     return result
+
 @app.get("/dashboard-data")
 def get_dashboard_data(
     user: dict = Depends(require_role(["admin","analyst","auditor"]))
 ):
 
-    response = {}
+    response = {
+        "kpis": {},
+        "forecast": [],
+        "chart": [],
+        "prediction": {},
+        "anomaly": {"results": []},
+        "risk_records": {},
+        "blockchain": {}
+    }
 
     # KPI
     try:
         response["kpis"] = get_kpis(user)
     except Exception as e:
-        response["kpis"] = {}
         print("KPI Error:", e)
 
     # Forecast graph
     try:
         response["forecast"] = revenue_forecast(user)
     except Exception as e:
-        response["forecast"] = []
         print("Forecast Error:", e)
 
     # Chart data
     try:
         response["chart"] = chart_data(user)
     except Exception as e:
-        response["chart"] = []
         print("Chart Error:", e)
 
-    # Prediction
+    # Prediction (light)
     try:
         response["prediction"] = forecast_revenue(user)
     except Exception as e:
-        response["prediction"] = {}
         print("Prediction Error:", e)
 
-    # ⚠️ ML Risk (heavy → protect it)
+    # 🚨 IMPORTANT: Do NOT run heavy ML every time
+    # Instead: read already stored risk from DB
     try:
-        response["anomaly"] = classify_risk_xgb(user)
+        data = list(financial_collection.find({
+            "user_id": str(user.get("sub"))
+        }))
+
+        high = sum(1 for r in data if r.get("risk_level") == "High")
+        medium = sum(1 for r in data if r.get("risk_level") == "Medium")
+        low = sum(1 for r in data if r.get("risk_level") == "Low")
+
+        response["anomaly"] = {
+            "high": high,
+            "medium": medium,
+            "low": low,
+            "total": len(data)
+        }
+
     except Exception as e:
-        response["anomaly"] = {"results": []}
-        print("ML Error:", e)
+        print("Risk Read Error:", e)
 
     # Hash
     try:
         response["risk_records"] = hash_ml_results(user)
     except Exception as e:
-        response["risk_records"] = {}
         print("Hash Error:", e)
 
     # Blockchain
     try:
         response["blockchain"] = verify_integrity(user)
     except Exception as e:
-        response["blockchain"] = {}
         print("Blockchain Error:", e)
 
     return response
-
-@app.get("/reset-blockchain")
-def reset_blockchain():
-
-    blockchain_collection.delete_many({})
-
-    blockchain.chain = []
-
-    blockchain.create_genesis_block()
-
-    return {
-        "message": "Blockchain reset successfully",
-        "status": "Valid"
-    }
-
