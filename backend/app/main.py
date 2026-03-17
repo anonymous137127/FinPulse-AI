@@ -1083,6 +1083,7 @@ def chart_data(
         })
 
     return result
+
 @app.get("/dashboard-data")
 def get_dashboard_data(
     user: dict = Depends(require_role(["admin","analyst","auditor"]))
@@ -1092,13 +1093,18 @@ def get_dashboard_data(
         "kpis": {},
         "forecast": [],
         "chart": [],
-        "prediction": {},
+        "prediction": {
+            "next_month_prediction": 0,
+            "model_accuracy_r2": 0
+        },
         "anomaly": {
             "high": 0,
             "medium": 0,
             "low": 0
         },
-        "blockchain": {}
+        "blockchain": {
+            "status": "Unknown"
+        }
     }
 
     try:
@@ -1128,7 +1134,7 @@ def get_dashboard_data(
         except Exception as e:
             print("Chart Error:", e)
 
-        # ---------------- Prediction (READ ONLY) ----------------
+        # ---------------- ✅ FIX 1: PREDICTION ----------------
         try:
             prediction_data = financial_collection.find_one({
                 "user_id": user_id,
@@ -1137,22 +1143,32 @@ def get_dashboard_data(
 
             if prediction_data:
                 response["prediction"] = {
-                    "next_month_prediction": prediction_data.get("prediction", 0),
-                    "model_accuracy_r2": prediction_data.get("accuracy", 0)
+                    "next_month_prediction": float(prediction_data.get("prediction", 0)),
+                    "model_accuracy_r2": float(prediction_data.get("accuracy", 0))
                 }
         except Exception as e:
             print("Prediction Error:", e)
 
-        # ---------------- RISK (ONLY COUNT) ----------------
+        # ---------------- ✅ FIX 2: RISK COUNT ----------------
         try:
             data = list(financial_collection.find({
                 "user_id": user_id,
                 "type": {"$ne": "forecast_result"}
             }))
 
-            high = sum(1 for r in data if r.get("risk_level") == "High")
-            medium = sum(1 for r in data if r.get("risk_level") == "Medium")
-            low = sum(1 for r in data if r.get("risk_level") == "Low")
+            high = 0
+            medium = 0
+            low = 0
+
+            for r in data:
+                risk = r.get("risk_level")
+
+                if risk == "High":
+                    high += 1
+                elif risk == "Medium":
+                    medium += 1
+                elif risk == "Low":
+                    low += 1
 
             response["anomaly"] = {
                 "high": high,
@@ -1163,9 +1179,12 @@ def get_dashboard_data(
         except Exception as e:
             print("Risk Error:", e)
 
-        # ---------------- BLOCKCHAIN ----------------
+        # ---------------- ✅ FIX 3: BLOCKCHAIN ----------------
         try:
-            response["blockchain"] = verify_integrity(user)
+            bc = verify_integrity(user)
+            response["blockchain"] = {
+                "status": bc.get("status", "Unknown")
+            }
         except Exception as e:
             print("Blockchain Error:", e)
 
