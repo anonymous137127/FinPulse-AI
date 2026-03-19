@@ -1094,68 +1094,92 @@ def chart_data(
         })
 
     return result
+
 @app.get("/dashboard-data")
 def get_dashboard_data(
     user: dict = Depends(require_role(["admin","analyst","auditor"]))
 ):
 
-    current_user = users_collection.find_one({"username": user["sub"]})
-
-    if not current_user:
-        raise HTTPException(status_code=404, detail="User not found ❌")
-
-    user_id = str(current_user["_id"])
-
-    # ---------------- KPI ----------------
-    kpis = get_kpis(user)
-
-    # ---------------- FORECAST GRAPH ----------------
-    forecast = revenue_forecast(user)
-
-    # ---------------- CHART ----------------
-    chart = chart_data(user)
-
-    # ---------------- ✅ PREDICTION (READ FROM DB) ----------------
-    prediction_doc = financial_collection.find_one({
-        "user_id": user_id,
-        "type": "forecast_result"
-    })
-
-    prediction = {
-        "next_month_prediction": 0,
-        "model_accuracy_r2": 0
+    response = {
+        "kpis": {},
+        "forecast": [],
+        "chart": [],
+        "prediction": {},
+        "anomaly": {
+            "high": 0,
+            "medium": 0,
+            "low": 0
+        },
+        "blockchain": {}
     }
 
-    if prediction_doc:
-        prediction = {
-            "next_month_prediction": prediction_doc.get("prediction", 0),
-            "model_accuracy_r2": prediction_doc.get("accuracy", 0)
-        }
+    try:
+        # 🔹 Get logged-in user
+        current_user = users_collection.find_one({"username": user["sub"]})
 
-    # ---------------- ✅ RISK (READ ONLY) ----------------
-    data = list(financial_collection.find({
-        "user_id": user_id,
-        "type": {"$ne": "forecast_result"}
-    }))
+        if not current_user:
+            raise HTTPException(status_code=404, detail="User not found ❌")
 
-    high = sum(1 for r in data if r.get("risk_level") == "High")
-    medium = sum(1 for r in data if r.get("risk_level") == "Medium")
-    low = sum(1 for r in data if r.get("risk_level") == "Low")
+        user_id = str(current_user["_id"])
 
-    anomaly = {
-        "high": high,
-        "medium": medium,
-        "low": low
-    }
+        # ---------------- KPI ----------------
+        try:
+            response["kpis"] = get_kpis(user)
+        except Exception as e:
+            print("KPI Error:", e)
 
-    # ---------------- BLOCKCHAIN ----------------
-    blockchain = verify_integrity(user)
+        # ---------------- Forecast Graph ----------------
+        try:
+            response["forecast"] = revenue_forecast(user)
+        except Exception as e:
+            print("Forecast Error:", e)
 
-    return {
-        "kpis": kpis,
-        "forecast": forecast,
-        "prediction": prediction,
-        "chart": chart,
-        "anomaly": anomaly,
-        "blockchain": blockchain
-    }
+        # ---------------- Chart Data ----------------
+        try:
+            response["chart"] = chart_data(user)
+        except Exception as e:
+            print("Chart Error:", e)
+
+        # ---------------- Prediction (READ ONLY) ----------------
+        try:
+            prediction_data = financial_collection.find_one({
+                "user_id": user_id,
+                "type": "forecast_result"
+            })
+
+            if prediction_data:
+                response["prediction"] = {
+                    "next_month_prediction": prediction_data.get("prediction", 0),
+                    "model_accuracy_r2": prediction_data.get("accuracy", 0)
+                }
+        except Exception as e:
+            print("Prediction Error:", e)
+
+        # ---------------- RISK (ONLY COUNT) ----------------
+        try:
+            data = list(financial_collection.find({
+                "user_id": user_id,
+                "type": {"$ne": "forecast_result"}
+            }))
+
+            high = sum(1 for r in data if r.get("risk_level") == "High")
+            medium = sum(1 for r in data if r.get("risk_level") == "Medium")
+            low = sum(1 for r in data if r.get("risk_level") == "Low")
+
+            response["anomaly"] = {
+                "high": high,
+                "medium": medium,
+                "low": low
+            }
+
+        except Exception as e:
+            print("Risk Error:", e)
+
+        # ---------------- BLOCKCHAIN ----------------
+        try:
+            response["blockchain"] = verify_integrity(user)
+        except Exception as e:
+            print("Blockchain Error:", e)
+
+    except Exception as main_error:
+        print("Dashboard Error:", main_error)
