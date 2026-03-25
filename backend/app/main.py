@@ -258,6 +258,7 @@ def login(username: str, password: str):
         "username": user["username"],
         "role": user["role"]
     }
+    
 @app.post("/upload-csv")
 def upload_csv(
     file: UploadFile = File(...),
@@ -603,6 +604,28 @@ def classify_risk_xgb(
         raise HTTPException(
             status_code=500,
             detail=f"Risk classification failed: {str(e)}"
+        )
+
+def run_risk_classification(user):
+
+    current_user = users_collection.find_one({"username": user["sub"]})
+    user_id = str(current_user["_id"])
+
+    data = list(financial_collection.find({"user_id": user_id}))
+
+    for record in data:
+        revenue = float(record.get("revenue", 0))
+
+        if revenue < 1000:
+            risk = "Low"
+        elif revenue < 5000:
+            risk = "Medium"
+        else:
+            risk = "High"
+
+        financial_collection.update_one(
+            {"_id": record["_id"]},
+            {"$set": {"risk_level": risk}}
         )
 
 # ---------------- HASH ML RESULTS ----------------
