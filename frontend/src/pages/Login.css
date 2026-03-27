@@ -1,0 +1,182 @@
+/* ================= GLOBAL ================= */
+
+body{
+  margin:0;
+  font-family:"Segoe UI",Arial,Helvetica,sans-serif;
+  background:#020617;
+  color:white;
+}
+
+/* ================= LOGIN PAGE ================= */
+
+.login-container{
+  height:100vh;
+  background:linear-gradient(135deg,#020617,#020617,#0f172a,#1e293b);
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  align-items:center;
+}
+
+/* ================= LOGIN CARD ================= */
+
+.login-card{
+  background:#020617;
+  padding:40px;
+  width:380px;
+  border-radius:12px;
+  border:1px solid #1e293b;
+  box-shadow:0 0 25px rgba(56,189,248,0.25);
+  text-align:center;
+}
+
+/* ================= TITLE ================= */
+
+.title{
+  margin-bottom:5px;
+  color:#38bdf8;
+  font-size:28px;
+  letter-spacing:1px;
+}
+
+/* ================= SUBTITLE ================= */
+
+.subtitle{
+  font-size:14px;
+  color:#94a3b8;
+  margin-bottom:25px;
+}
+
+/* ================= INPUT ================= */
+
+.input{
+  width:85%;
+  max-width:320px;
+  padding:12px;
+  margin:10px auto;
+  display:block;
+  border-radius:6px;
+  border:1px solid #1e293b;
+  background:#020617;
+  color:white;
+  font-size:14px;
+  transition:0.3s;
+}
+
+.input::placeholder{
+  color:#64748b;
+}
+
+.input:focus{
+  outline:none;
+  border-color:#38bdf8;
+  box-shadow:0 0 8px rgba(56,189,248,0.4);
+}
+
+/* ================= ROLE SELECT ================= */
+
+.role-select{
+  width:85%;
+  max-width:320px;
+  padding:12px;
+  margin:10px auto;
+  display:block;
+  border-radius:6px;
+  border:1px solid #1e293b;
+  background:#020617;
+  color:white;
+  font-size:14px;
+  cursor:pointer;
+  transition:0.3s;
+}
+
+.role-select:focus{
+  outline:none;
+  border-color:#38bdf8;
+  box-shadow:0 0 8px rgba(56,189,248,0.4);
+}
+
+.role-select option{
+  background:#020617;
+  color:white;
+}
+
+/* ================= BUTTON ================= */
+
+.login-btn{
+  width:85%;
+  max-width:300px;
+  padding:12px;
+  margin:18px auto;
+  display:block;
+  background:#38bdf8;
+  color:black;
+  border:none;
+  border-radius:6px;
+  font-size:15px;
+  cursor:pointer;
+  transition:0.3s;
+  font-weight:bold;
+}
+
+.login-btn:hover{
+  background:#0ea5e9;
+  box-shadow:0 0 12px rgba(56,189,248,0.6);
+}
+
+/* ================= REGISTER TEXT ================= */
+
+.register-text{
+  margin-top:20px;
+  font-size:14px;
+  color:#94a3b8;
+}
+
+.register-text a{
+  color:#38bdf8;
+  text-decoration:none;
+}
+
+.register-text a:hover{
+  text-decoration:underline;
+}
+
+/* ================= POPUP MESSAGE ================= */
+
+.popup{
+  background:#22c55e;
+  color:white;
+  padding:10px;
+  border-radius:6px;
+  margin-bottom:15px;
+  font-size:14px;
+  border:1px solid #16a34a;
+}
+
+/* ================= MOVING SECURITY TEXT ================= */
+
+.security-text{
+  margin-top:30px;
+  width:450px;
+  overflow:hidden;
+  white-space:nowrap;
+  color:#38bdf8;
+  font-size:14px;
+}
+
+.scroll-text{
+  display:inline-block;
+  padding-left:100%;
+  animation:scrollText 18s linear infinite;
+}
+
+/* ================= ANIMATION ================= */
+
+@keyframes scrollText{
+  0%{
+    transform:translateX(0);
+  }
+  100%{
+    transform:translateX(-100%);
+  }
+}
