@@ -276,23 +276,16 @@ def upload_csv(
 
     user_id = str(current_user["_id"])
 
-    # 🔹 Delete old data (clean reset)
-    financial_collection.delete_many({
-        "user_id": user_id
-    })
-
-    rows_inserted = 0
-
     try:
         df = pd.read_csv(file.file)
 
-        # 🔹 Clean column names
-        df.columns = df.columns.str.strip().str.lower()
+        # =========================
+        # 🔹 CLEAN DATA
+        # =========================
 
-        # 🔹 Remove currency symbols
+        df.columns = df.columns.str.strip().str.lower()
         df = df.replace(r'[\$,₹]', '', regex=True)
 
-        # 🔹 Detect numeric columns
         numeric_cols = []
 
         for col in df.columns:
@@ -311,6 +304,16 @@ def upload_csv(
         revenue_col = numeric_cols[0]
         expense_col = numeric_cols[1]
 
+        # =========================
+        # 🔥 DELETE OLD DATA (FIX DUPLICATE ISSUE)
+        # =========================
+
+        financial_collection.delete_many({"user_id": user_id})
+
+        # =========================
+        # 🔹 INSERT CLEAN DATA
+        # =========================
+
         records = []
 
         for _, row in df.iterrows():
@@ -328,24 +331,48 @@ def upload_csv(
                 "created_at": datetime.utcnow()
             })
 
-        if records:
-            financial_collection.insert_many(records)
+        if not records:
+            raise HTTPException(
+                status_code=400,
+                detail="No valid rows found in CSV"
+            )
+
+        financial_collection.insert_many(records)
 
         rows_inserted = len(records)
 
-        # =====================================================
-        # 🔥 IMPORTANT: RUN ML AFTER UPLOAD (FIX YOUR PROBLEM)
-        # =====================================================
+        # =========================
+        # 🔥 RUN ML MODELS
+        # =========================
 
         try:
-            classify_risk_xgb(user)   # ✅ generate risk_level
+            classify_risk_xgb(user)   # risk saved in DB
         except Exception as e:
             print("Risk ML Error:", e)
 
         try:
-            forecast_revenue(user)    # ✅ generate prediction
+            forecast_revenue(user)    # prediction saved in DB
         except Exception as e:
             print("Forecast ML Error:", e)
+
+        # =========================
+        # 🔥 FETCH UPDATED DATA FOR DASHBOARD
+        # =========================
+
+        total_revenue = sum(r["revenue"] for r in records)
+        total_expense = sum(r["expense"] for r in records)
+
+        response = {
+            "message": "CSV uploaded + AI analysis completed ✅",
+            "rows_inserted": rows_inserted,
+            "kpis": {
+                "total_revenue": total_revenue,
+                "total_expense": total_expense,
+                "net_profit": total_revenue - total_expense
+            }
+        }
+
+        return response
 
     except Exception as e:
         raise HTTPException(
@@ -353,12 +380,7 @@ def upload_csv(
             detail=f"CSV processing error: {str(e)}"
         )
 
-    return {
-        "message": "CSV uploaded + AI analysis completed ✅",
-        "rows_inserted": rows_inserted
-    }
-    
-# ---------------- REVENUE FORECAST ----------------
+# ---- REVENUE FORECAST ----------------
 
 @app.get("/forecast-revenue")
 def forecast_revenue(
@@ -1130,26 +1152,8 @@ def get_dashboard_data(
     user: dict = Depends(require_role(["admin","analyst","auditor"]))
 ):
 
-    response = {
-        "kpis": {},
-        "forecast": [],
-        "chart": [],
-        "prediction": {
-            "next_month_prediction": 0,
-            "model_accuracy_r2": 0
-        },
-        "anomaly": {
-            "high": 0,
-            "medium": 0,
-            "low": 0
-        },
-        "blockchain": {
-            "status": "Unknown"
-        }
-    }
-
     try:
-        # 🔹 Get logged-in user
+        # 🔹 Get user
         current_user = users_collection.find_one({"username": user["sub"]})
 
         if not current_user:
@@ -1157,79 +1161,128 @@ def get_dashboard_data(
 
         user_id = str(current_user["_id"])
 
-        # ---------------- KPI ----------------
-        try:
-            response["kpis"] = get_kpis(user)
-        except Exception as e:
-            print("KPI Error:", e)
+        # 🔥 IMPORTANT: FETCH DATA ONLY ONCE
+        data = list(financial_collection.find({
+            "user_id": user_id
+        }))
 
-        # ---------------- Forecast Graph ----------------
-        try:
-            response["forecast"] = revenue_forecast(user)
-        except Exception as e:
-            print("Forecast Error:", e)
-
-        # ---------------- Chart Data ----------------
-        try:
-            response["chart"] = chart_data(user)
-        except Exception as e:
-            print("Chart Error:", e)
-
-        # ---------------- ✅ FIX 1: PREDICTION ----------------
-        try:
-            prediction_data = financial_collection.find_one({
-                "user_id": user_id,
-                "type": "forecast_result"
-            })
-
-            if prediction_data:
-                response["prediction"] = {
-                    "next_month_prediction": float(prediction_data.get("prediction", 0)),
-                    "model_accuracy_r2": float(prediction_data.get("accuracy", 0))
+        # 🔹 Empty case
+        if not data:
+            return {
+                "kpis": {
+                    "total_revenue": 0,
+                    "total_expense": 0,
+                    "net_profit": 0
+                },
+                "forecast": [],
+                "chart": [],
+                "prediction": {
+                    "next_month_prediction": 0,
+                    "model_accuracy_r2": 0
+                },
+                "anomaly": {
+                    "high": 0,
+                    "medium": 0,
+                    "low": 0
+                },
+                "blockchain": {
+                    "status": "Unknown"
                 }
-        except Exception as e:
-            print("Prediction Error:", e)
-
-        # ---------------- ✅ FIX 2: RISK COUNT ----------------
-        try:
-            data = list(financial_collection.find({
-                "user_id": user_id,
-                "type": {"$ne": "forecast_result"}
-            }))
-
-            high = 0
-            medium = 0
-            low = 0
-
-            for r in data:
-                risk = r.get("risk_level")
-
-                if risk == "High":
-                    high += 1
-                elif risk == "Medium":
-                    medium += 1
-                elif risk == "Low":
-                    low += 1
-
-            response["anomaly"] = {
-                "high": high,
-                "medium": medium,
-                "low": low
             }
 
-        except Exception as e:
-            print("Risk Error:", e)
+        # =========================
+        # 🔥 KPI CALCULATION
+        # =========================
 
-        # ---------------- ✅ FIX 3: BLOCKCHAIN ----------------
+        total_revenue = 0
+        total_expense = 0
+
+        for r in data:
+            try:
+                total_revenue += float(r.get("revenue", 0))
+            except:
+                pass
+
+            try:
+                total_expense += float(r.get("expense", 0))
+            except:
+                pass
+
+        kpis = {
+            "total_revenue": total_revenue,
+            "total_expense": total_expense,
+            "net_profit": total_revenue - total_expense
+        }
+
+        # =========================
+        # 🔥 RISK COUNT
+        # =========================
+
+        high = medium = low = 0
+
+        for r in data:
+            risk = r.get("risk_level")
+
+            if risk == "High":
+                high += 1
+            elif risk == "Medium":
+                medium += 1
+            elif risk == "Low":
+                low += 1
+
+        anomaly = {
+            "high": high,
+            "medium": medium,
+            "low": low
+        }
+
+        # =========================
+        # 🔥 PREDICTION
+        # =========================
+
+        prediction_data = financial_collection.find_one({
+            "user_id": user_id,
+            "type": "forecast_result"
+        })
+
+        prediction = {
+            "next_month_prediction": 0,
+            "model_accuracy_r2": 0
+        }
+
+        if prediction_data:
+            prediction = {
+                "next_month_prediction": float(prediction_data.get("prediction", 0)),
+                "model_accuracy_r2": float(prediction_data.get("accuracy", 0))
+            }
+
+        # =========================
+        # 🔥 BLOCKCHAIN
+        # =========================
+
         try:
             bc = verify_integrity(user)
-            response["blockchain"] = {
-                "status": bc.get("status", "Unknown")
+            blockchain_status = bc.get("status", "Unknown")
+        except:
+            blockchain_status = "Unknown"
+
+        # =========================
+        # 🔥 FINAL RESPONSE (ALL AT ONCE)
+        # =========================
+
+        return {
+            "kpis": kpis,
+            "forecast": revenue_forecast(user),
+            "chart": chart_data(user),
+            "prediction": prediction,
+            "anomaly": anomaly,
+            "blockchain": {
+                "status": blockchain_status
             }
-        except Exception as e:
-            print("Blockchain Error:", e)
+        }
 
-    except Exception as main_error:
-        print("Dashboard Error:", main_error)
-
-    return response
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Dashboard error: {str(e)}"
+        )
