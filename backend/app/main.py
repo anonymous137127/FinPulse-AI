@@ -366,36 +366,222 @@ def upload_csv(
             "message": "CSV uploaded + AI analysis completed ✅",
             "rows_inserted": rows_inserted,
             "kpis": {
-                "total_revenue": total_revenue,
-                "total_expense": total_expense,
-                "net_profit": total_revenue - total_expense
-            }
-        }
-
-        return response
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"CSV processing error: {str(e)}"
-        )
-
-# ---- REVENUE FORECAST ----------------
-
-@app.get("/forecast-revenue")
-def forecast_revenue(
-    user: dict = Depends(require_role(["admin","analyst","auditor"]))
+@app.post("/upload-csv")
+def upload_csv(
+    file: UploadFile = File(...),
+    user: dict = Depends(require_role(["admin", "analyst", "auditor"]))
 ):
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only CSV files allowed ❌")
 
-    # 🔹 Get logged-in user
     current_user = users_collection.find_one({"username": user["sub"]})
-
     if not current_user:
         raise HTTPException(status_code=404, detail="User not found ❌")
 
     user_id = str(current_user["_id"])
 
-    # ✅ FIX 1: CORRECT FILTER (VERY IMPORTANT)
+    try:
+        df = pd.read_csv(file.file)
+
+        # ── Clean column names ─────────────────────────────────
+        df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
+        df = df.replace(r'[\$,₹,]', '', regex=True)
+
+        print("Detected columns:", list(df.columns))
+
+        # ══════════════════════════════════════════════════
+        # ✅ FIX 1: SMART COLUMN DETECTION
+        # Keyword matching — never picks date/id/quantity
+        # ══════════════════════════════════════════════════
+
+        # Keywords to identify revenue column
+        REVENUE_KEYWORDS = ["revenue", "income", "sales", "earnings", "turnover"]
+        # Keywords to identify expense/cost column
+        EXPENSE_KEYWORDS = ["expense", "expenses", "cost", "costs", "spending", "price"]
+        # Columns to always skip (never treat as revenue/expense)
+        SKIP_COLS = ["date", "month", "year", "week", "day", "id",
+                     "order_id", "index", "quantity", "qty", "count"]
+
+        def find_col(df, keywords, skip):
+            """Find first column whose name contains any keyword."""
+            for kw in keywords:
+                for col in df.columns:
+                    if kw in col and col not in skip:
+                        return col
+            return None
+
+        revenue_col = find_col(df, REVENUE_KEYWORDS, SKIP_COLS)
+        expense_col = find_col(df, EXPENSE_KEYWORDS, SKIP_COLS)
+
+        # Fallback: first two pure numeric cols (excluding skip list)
+        if not revenue_col or not expense_col:
+            numeric_cols = []
+            for col in df.columns:
+                if col in SKIP_COLS:
+                    continue
+                converted = pd.to_numeric(df[col], errors="coerce")
+                # Only accept if >80% values are valid numbers
+                if converted.notna().sum() / max(len(df), 1) > 0.8:
+                    numeric_cols.append(col)
+
+            if len(numeric_cols) < 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No numeric revenue/expense columns found ❌"
+                )
+
+            revenue_col = revenue_col or numeric_cols[0]
+            # If no expense col, derive it (80% of revenue as proxy)
+            expense_col = expense_col or (
+                numeric_cols[1] if len(numeric_cols) > 1 else None
+            )
+
+        print(f"Revenue col: {revenue_col}")
+        print(f"Expense col: {expense_col}")
+
+        # ══════════════════════════════════════════════════
+        # ✅ FIX 2: CONVERT REVENUE & EXPENSE TO NUMERIC
+        # ══════════════════════════════════════════════════
+
+        df[revenue_col] = pd.to_numeric(df[revenue_col], errors="coerce")
+
+        if expense_col:
+            df[expense_col] = pd.to_numeric(df[expense_col], errors="coerce")
+        else:
+            # No expense column: derive as 70% of revenue (cost estimate)
+            df["expense_derived"] = df[revenue_col] * 0.70
+            expense_col = "expense_derived"
+
+        # ══════════════════════════════════════════════════
+        # ✅ FIX 3: DETECT IF TRANSACTIONAL (needs grouping)
+        # If dataset has a Date column → group by month
+        # ══════════════════════════════════════════════════
+
+        DATE_COL_NAMES = ["date", "order_date", "transaction_date",
+                          "invoice_date", "created_at", "month"]
+
+        date_col = next(
+            (c for c in df.columns if c in DATE_COL_NAMES), None
+        )
+
+        records = []
+
+        if date_col:
+            # ── Transactional data: aggregate by month ─────
+            try:
+                df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+                df = df.dropna(subset=[date_col])
+                df["_month"] = df[date_col].dt.to_period("M")
+
+                monthly_agg = (
+                    df.groupby("_month")
+                    .agg(
+                        revenue=(revenue_col, "sum"),
+                        expense=(expense_col, "sum")
+                    )
+                    .reset_index()
+                    .sort_values("_month")   # chronological order ✅
+                )
+
+                print(f"Grouped into {len(monthly_agg)} monthly buckets")
+
+                # Each row = 1 month, with correct created_at sequence
+                for idx, row in monthly_agg.iterrows():
+                    records.append({
+                        "user_id": user_id,
+                        "revenue": float(row["revenue"]),
+                        "expense": float(row["expense"]),
+                        "month":   str(row["_month"]),   # e.g. "2026-01"
+                        "row_index": idx,
+                        # Unique timestamps preserve order
+                        "created_at": datetime.utcnow() + timedelta(seconds=idx)
+                    })
+
+            except Exception as date_err:
+                print("Date parsing failed, falling back to row-by-row:", date_err)
+                date_col = None   # fall through to row-by-row below
+
+        if not date_col:
+            # ── Already aggregated data (e.g. monthly CSV) ─
+            df = df.dropna(subset=[revenue_col])
+
+            for idx, row in df.iterrows():
+                revenue = row.get(revenue_col)
+                expense = row.get(expense_col, revenue * 0.70)
+
+                if pd.isna(revenue):
+                    continue
+
+                records.append({
+                    "user_id":   user_id,
+                    "revenue":   float(revenue),
+                    "expense":   float(expense) if not pd.isna(expense) else float(revenue) * 0.70,
+                    "row_index": int(idx),
+                    "created_at": datetime.utcnow() + timedelta(seconds=int(idx))
+                })
+
+        if not records:
+            raise HTTPException(
+                status_code=400,
+                detail="No valid rows found in CSV ❌"
+            )
+
+        # ── Delete old data & insert new ──────────────────
+        financial_collection.delete_many({"user_id": user_id})
+        financial_collection.insert_many(records)
+
+        # ── Run ML models ──────────────────────────────────
+        try:
+            classify_risk_xgb(user)
+        except Exception as e:
+            print("Risk ML Error:", e)
+
+        try:
+            forecast_revenue(user)
+        except Exception as e:
+            print("Forecast ML Error:", e)
+
+        # ── KPIs ───────────────────────────────────────────
+        total_revenue = sum(r["revenue"] for r in records)
+        total_expense = sum(r["expense"] for r in records)
+
+        return {
+            "message": "CSV uploaded + AI analysis completed ✅",
+            "rows_inserted":       len(records),
+            "data_type_detected":  "transactional (grouped by month)" if date_col else "pre-aggregated",
+            "columns_used": {
+                "revenue": revenue_col,
+                "expense": expense_col
+            },
+            "kpis": {
+                "total_revenue": round(total_revenue, 2),
+                "total_expense": round(total_expense, 2),
+                "net_profit":    round(total_revenue - total_expense, 2)
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"CSV processing error: {str(e)}"
+    )
+
+# ---------------- REVENUE FORECAST (FIXED) ----------------
+
+@app.get("/forecast-revenue")
+def forecast_revenue(
+    user: dict = Depends(require_role(["admin", "analyst", "auditor"]))
+):
+    # ── 1. Fetch user ──────────────────────────────────────────
+    current_user = users_collection.find_one({"username": user["sub"]})
+    if not current_user:
+        raise HTTPException(status_code=404, detail="User not found ❌")
+
+    user_id = str(current_user["_id"])
+
+    # ── 2. Fetch only raw financial rows (not forecast results) ─
     data = list(
         financial_collection.find({
             "user_id": user_id,
@@ -403,23 +589,19 @@ def forecast_revenue(
                 {"type": {"$exists": False}},
                 {"type": {"$ne": "forecast_result"}}
             ]
-        })
+        }).sort("created_at", 1)   # ✅ FIX: chronological order matters
     )
 
-    # ✅ DEBUG (optional)
-    print("Total records for forecast:", len(data))
-
-    # 🔹 Minimum data check
-    if len(data) < 2:
+    if len(data) < 3:
         return {
             "next_month_prediction": 0,
             "model_accuracy_r2": 0,
-            "months_used_for_training": []
+            "months_used_for_training": [],
+            "message": "Need at least 3 records for forecasting"
         }
 
-    # 🔹 Extract revenues safely
+    # ── 3. Extract valid revenues ───────────────────────────────
     revenues = []
-
     for row in data:
         try:
             val = float(row.get("revenue", 0))
@@ -428,52 +610,80 @@ def forecast_revenue(
         except:
             continue
 
-    if len(revenues) < 2:
+    if len(revenues) < 3:
         return {
             "next_month_prediction": 0,
             "model_accuracy_r2": 0,
             "months_used_for_training": revenues
         }
 
-    # ---------------- GROUP INTO 6 MONTHS ----------------
-    chunk_size = max(1, len(revenues) // 6)
+    # ── 4. Group into monthly buckets (6–12 months) ─────────────
+    #    ✅ FIX: dynamic months instead of hardcoded 6
+    num_months = min(12, max(6, len(revenues) // 3))
+    chunk_size = max(1, len(revenues) // num_months)
 
     monthly_totals = []
-
-    for i in range(6):
+    for i in range(num_months):
         start = i * chunk_size
-        end = start + chunk_size
-        monthly_totals.append(sum(revenues[start:end]))
+        end = (start + chunk_size) if (i < num_months - 1) else len(revenues)
+        if start < len(revenues):
+            monthly_totals.append(sum(revenues[start:end]))
 
-    monthly_totals = np.array(monthly_totals)
+    monthly_totals = np.array(monthly_totals, dtype=float)
 
-    # ---------------- TRAIN MODEL ----------------
-    X = np.arange(len(monthly_totals)).reshape(-1, 1)
-    y = monthly_totals
+    # ── 5. Create lag features ──────────────────────────────────
+    #    ✅ FIX: model now uses previous N months to predict next
+    #    e.g. [month1, month2, month3] → predict month4
+    def create_lag_features(series: np.ndarray, n_lags: int):
+        X, y = [], []
+        for i in range(n_lags, len(series)):
+            X.append(series[i - n_lags : i])   # last N months as input
+            y.append(series[i])                 # next month as target
+        return np.array(X), np.array(y)
 
-    model = LinearRegression()
-    model.fit(X, y)   # ✅ FIX: avoid train_test_split crash on small data
+    n_lags = min(3, len(monthly_totals) - 1)   # use up to 3 lag months
+    X, y = create_lag_features(monthly_totals, n_lags)
 
-    # ---------------- PREDICT NEXT MONTH ----------------
-    next_index = np.array([[len(monthly_totals)]])
-    prediction = model.predict(next_index)[0]
+    if len(X) < 2:
+        # Not enough samples for train/test — train on everything
+        model = LinearRegression()
+        model.fit(X, y)
+        accuracy = float(max(0.0, model.score(X, y)))
 
-    # 🔹 Safe accuracy (optional)
-    accuracy = 1.0
+    else:
+        # ── 6. Proper train/test split ──────────────────────────
+        #    ✅ FIX: time-series split (no shuffle — order matters)
+        split_idx = max(1, int(len(X) * 0.8))
+        X_train, X_test = X[:split_idx], X[split_idx:]
+        y_train, y_test = y[:split_idx], y[split_idx:]
 
-    # 🔹 Save model
+        model = LinearRegression()
+        model.fit(X_train, y_train)
+
+        # ── 7. Real R² accuracy ─────────────────────────────────
+        #    ✅ FIX: accuracy is now actually computed (was 1.0)
+        if len(X_test) > 0:
+            y_pred = model.predict(X_test)
+            raw_r2 = r2_score(y_test, y_pred)
+            accuracy = float(max(0.0, min(1.0, raw_r2)))  # clip to [0, 1]
+        else:
+            accuracy = float(max(0.0, model.score(X_train, y_train)))
+
+    # ── 8. Predict next month ───────────────────────────────────
+    last_window = monthly_totals[-n_lags:].reshape(1, -1)
+    prediction = float(model.predict(last_window)[0])
+    prediction = max(0.0, prediction)   # ✅ FIX: no negative revenue
+
+    # ── 9. Save model & result ──────────────────────────────────
     joblib.dump(model, "revenue_model.pkl")
 
-    # ✅ FIX 2: ALWAYS SAVE PREDICTION
     financial_collection.update_one(
-        {
-            "user_id": user_id,
-            "type": "forecast_result"
-        },
+        {"user_id": user_id, "type": "forecast_result"},
         {
             "$set": {
-                "prediction": float(round(prediction, 2)),
-                "accuracy": float(round(accuracy, 4)),
+                "prediction": round(prediction, 2),
+                "accuracy":   round(accuracy, 4),
+                "n_lags":     n_lags,
                 "created_at": datetime.utcnow()
             }
         },
@@ -481,10 +691,11 @@ def forecast_revenue(
     )
 
     return {
-        "next_month_prediction": round(float(prediction), 2),
-        "model_accuracy_r2": round(float(accuracy), 4),
-        "months_used_for_training": monthly_totals.tolist()
-    }
+        "next_month_prediction":   round(prediction, 2),
+        "model_accuracy_r2":       round(accuracy, 4),
+        "months_used_for_training": monthly_totals.tolist(),
+        "lags_used":               n_lags
+            }
     
  # ---------------- XGBOOST RISK CLASSIFICATION ----------------
 
