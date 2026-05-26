@@ -218,6 +218,7 @@ def register(username: str, password: str, role: str):
         "username": username,
         "role": role
     }
+
 # ---------------- LOGIN ----------------
 
 from app.mongodb import users_collection
@@ -258,114 +259,9 @@ def login(username: str, password: str):
         "username": user["username"],
         "role": user["role"]
     }
-    
-@app.post("/upload-csv")
-def upload_csv(
-    file: UploadFile = File(...),
-    user: dict = Depends(require_role(["admin","analyst","auditor"]))
-):
 
-    if not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Only CSV files allowed ❌")
+# ---------------- UPLOAD CSV (FIXED) ----------------
 
-    # 🔹 Get user
-    current_user = users_collection.find_one({"username": user["sub"]})
-
-    if not current_user:
-        raise HTTPException(status_code=404, detail="User not found ❌")
-
-    user_id = str(current_user["_id"])
-
-    try:
-        df = pd.read_csv(file.file)
-
-        # =========================
-        # 🔹 CLEAN DATA
-        # =========================
-
-        df.columns = df.columns.str.strip().str.lower()
-        df = df.replace(r'[\$,₹]', '', regex=True)
-
-        numeric_cols = []
-
-        for col in df.columns:
-            converted = pd.to_numeric(df[col], errors="coerce")
-
-            if converted.notna().sum() > 0:
-                df[col] = converted
-                numeric_cols.append(col)
-
-        if len(numeric_cols) < 2:
-            raise HTTPException(
-                status_code=400,
-                detail="Dataset must contain at least 2 numeric columns"
-            )
-
-        revenue_col = numeric_cols[0]
-        expense_col = numeric_cols[1]
-
-        # =========================
-        # 🔥 DELETE OLD DATA (FIX DUPLICATE ISSUE)
-        # =========================
-
-        financial_collection.delete_many({"user_id": user_id})
-
-        # =========================
-        # 🔹 INSERT CLEAN DATA
-        # =========================
-
-        records = []
-
-        for _, row in df.iterrows():
-
-            revenue = row.get(revenue_col)
-            expense = row.get(expense_col)
-
-            if pd.isna(revenue) or pd.isna(expense):
-                continue
-
-            records.append({
-                "user_id": user_id,
-                "revenue": float(revenue),
-                "expense": float(expense),
-                "created_at": datetime.utcnow()
-            })
-
-        if not records:
-            raise HTTPException(
-                status_code=400,
-                detail="No valid rows found in CSV"
-            )
-
-        financial_collection.insert_many(records)
-
-        rows_inserted = len(records)
-
-        # =========================
-        # 🔥 RUN ML MODELS
-        # =========================
-
-        try:
-            classify_risk_xgb(user)   # risk saved in DB
-        except Exception as e:
-            print("Risk ML Error:", e)
-
-        try:
-            forecast_revenue(user)    # prediction saved in DB
-        except Exception as e:
-            print("Forecast ML Error:", e)
-
-        # =========================
-        # 🔥 FETCH UPDATED DATA FOR DASHBOARD
-        # =========================
-
-        total_revenue = sum(r["revenue"] for r in records)
-        total_expense = sum(r["expense"] for r in records)
-
-        response = {
-            "message": "CSV uploaded + AI analysis completed ✅",
-            "rows_inserted": rows_inserted,
-            "kpis": {
 @app.post("/upload-csv")
 def upload_csv(
     file: UploadFile = File(...),
@@ -394,11 +290,8 @@ def upload_csv(
         # Keyword matching — never picks date/id/quantity
         # ══════════════════════════════════════════════════
 
-        # Keywords to identify revenue column
         REVENUE_KEYWORDS = ["revenue", "income", "sales", "earnings", "turnover"]
-        # Keywords to identify expense/cost column
         EXPENSE_KEYWORDS = ["expense", "expenses", "cost", "costs", "spending", "price"]
-        # Columns to always skip (never treat as revenue/expense)
         SKIP_COLS = ["date", "month", "year", "week", "day", "id",
                      "order_id", "index", "quantity", "qty", "count"]
 
@@ -420,7 +313,6 @@ def upload_csv(
                 if col in SKIP_COLS:
                     continue
                 converted = pd.to_numeric(df[col], errors="coerce")
-                # Only accept if >80% values are valid numbers
                 if converted.notna().sum() / max(len(df), 1) > 0.8:
                     numeric_cols.append(col)
 
@@ -431,7 +323,6 @@ def upload_csv(
                 )
 
             revenue_col = revenue_col or numeric_cols[0]
-            # If no expense col, derive it (80% of revenue as proxy)
             expense_col = expense_col or (
                 numeric_cols[1] if len(numeric_cols) > 1 else None
             )
@@ -448,13 +339,11 @@ def upload_csv(
         if expense_col:
             df[expense_col] = pd.to_numeric(df[expense_col], errors="coerce")
         else:
-            # No expense column: derive as 70% of revenue (cost estimate)
             df["expense_derived"] = df[revenue_col] * 0.70
             expense_col = "expense_derived"
 
         # ══════════════════════════════════════════════════
         # ✅ FIX 3: DETECT IF TRANSACTIONAL (needs grouping)
-        # If dataset has a Date column → group by month
         # ══════════════════════════════════════════════════
 
         DATE_COL_NAMES = ["date", "order_date", "transaction_date",
@@ -467,7 +356,6 @@ def upload_csv(
         records = []
 
         if date_col:
-            # ── Transactional data: aggregate by month ─────
             try:
                 df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
                 df = df.dropna(subset=[date_col])
@@ -480,29 +368,26 @@ def upload_csv(
                         expense=(expense_col, "sum")
                     )
                     .reset_index()
-                    .sort_values("_month")   # chronological order ✅
+                    .sort_values("_month")
                 )
 
                 print(f"Grouped into {len(monthly_agg)} monthly buckets")
 
-                # Each row = 1 month, with correct created_at sequence
                 for idx, row in monthly_agg.iterrows():
                     records.append({
                         "user_id": user_id,
                         "revenue": float(row["revenue"]),
                         "expense": float(row["expense"]),
-                        "month":   str(row["_month"]),   # e.g. "2026-01"
+                        "month":   str(row["_month"]),
                         "row_index": idx,
-                        # Unique timestamps preserve order
                         "created_at": datetime.utcnow() + timedelta(seconds=idx)
                     })
 
             except Exception as date_err:
                 print("Date parsing failed, falling back to row-by-row:", date_err)
-                date_col = None   # fall through to row-by-row below
+                date_col = None
 
         if not date_col:
-            # ── Already aggregated data (e.g. monthly CSV) ─
             df = df.dropna(subset=[revenue_col])
 
             for idx, row in df.iterrows():
@@ -566,7 +451,7 @@ def upload_csv(
         raise HTTPException(
             status_code=500,
             detail=f"CSV processing error: {str(e)}"
-    )
+        )
 
 # ---------------- REVENUE FORECAST (FIXED) ----------------
 
@@ -589,7 +474,7 @@ def forecast_revenue(
                 {"type": {"$exists": False}},
                 {"type": {"$ne": "forecast_result"}}
             ]
-        }).sort("created_at", 1)   # ✅ FIX: chronological order matters
+        }).sort("created_at", 1)
     )
 
     if len(data) < 3:
@@ -618,7 +503,6 @@ def forecast_revenue(
         }
 
     # ── 4. Group into monthly buckets (6–12 months) ─────────────
-    #    ✅ FIX: dynamic months instead of hardcoded 6
     num_months = min(12, max(6, len(revenues) // 3))
     chunk_size = max(1, len(revenues) // num_months)
 
@@ -632,27 +516,23 @@ def forecast_revenue(
     monthly_totals = np.array(monthly_totals, dtype=float)
 
     # ── 5. Create lag features ──────────────────────────────────
-    #    ✅ FIX: model now uses previous N months to predict next
-    #    e.g. [month1, month2, month3] → predict month4
     def create_lag_features(series: np.ndarray, n_lags: int):
         X, y = [], []
         for i in range(n_lags, len(series)):
-            X.append(series[i - n_lags : i])   # last N months as input
-            y.append(series[i])                 # next month as target
+            X.append(series[i - n_lags : i])
+            y.append(series[i])
         return np.array(X), np.array(y)
 
-    n_lags = min(3, len(monthly_totals) - 1)   # use up to 3 lag months
+    n_lags = min(3, len(monthly_totals) - 1)
     X, y = create_lag_features(monthly_totals, n_lags)
 
     if len(X) < 2:
-        # Not enough samples for train/test — train on everything
         model = LinearRegression()
         model.fit(X, y)
         accuracy = float(max(0.0, model.score(X, y)))
 
     else:
-        # ── 6. Proper train/test split ──────────────────────────
-        #    ✅ FIX: time-series split (no shuffle — order matters)
+        # ── 6. Time-series train/test split (no shuffle) ────────
         split_idx = max(1, int(len(X) * 0.8))
         X_train, X_test = X[:split_idx], X[split_idx:]
         y_train, y_test = y[:split_idx], y[split_idx:]
@@ -661,18 +541,17 @@ def forecast_revenue(
         model.fit(X_train, y_train)
 
         # ── 7. Real R² accuracy ─────────────────────────────────
-        #    ✅ FIX: accuracy is now actually computed (was 1.0)
         if len(X_test) > 0:
             y_pred = model.predict(X_test)
             raw_r2 = r2_score(y_test, y_pred)
-            accuracy = float(max(0.0, min(1.0, raw_r2)))  # clip to [0, 1]
+            accuracy = float(max(0.0, min(1.0, raw_r2)))
         else:
             accuracy = float(max(0.0, model.score(X_train, y_train)))
 
     # ── 8. Predict next month ───────────────────────────────────
     last_window = monthly_totals[-n_lags:].reshape(1, -1)
     prediction = float(model.predict(last_window)[0])
-    prediction = max(0.0, prediction)   # ✅ FIX: no negative revenue
+    prediction = max(0.0, prediction)
 
     # ── 9. Save model & result ──────────────────────────────────
     joblib.dump(model, "revenue_model.pkl")
@@ -691,20 +570,19 @@ def forecast_revenue(
     )
 
     return {
-        "next_month_prediction":   round(prediction, 2),
-        "model_accuracy_r2":       round(accuracy, 4),
+        "next_month_prediction":    round(prediction, 2),
+        "model_accuracy_r2":        round(accuracy, 4),
         "months_used_for_training": monthly_totals.tolist(),
-        "lags_used":               n_lags
-            }
-    
- # ---------------- XGBOOST RISK CLASSIFICATION ----------------
+        "lags_used":                n_lags
+    }
+
+# ---------------- XGBOOST RISK CLASSIFICATION ----------------
 
 @app.get("/classify-risk-xgb")
 def classify_risk_xgb(
     user: dict = Depends(require_role(["admin", "analyst", "auditor"]))
 ):
     try:
-        # 🔹 Get logged-in user
         current_user = users_collection.find_one({"username": user["sub"]})
 
         if not current_user:
@@ -712,7 +590,6 @@ def classify_risk_xgb(
 
         user_id = str(current_user["_id"])
 
-        # 🔹 Get financial data
         data = list(financial_collection.find({
             "user_id": user_id
         }))
@@ -724,7 +601,6 @@ def classify_risk_xgb(
                 "results": []
             }
 
-        # 🔹 Prepare valid data
         valid_data = []
 
         for record in data:
@@ -737,7 +613,6 @@ def classify_risk_xgb(
             except:
                 continue
 
-        # 🔥 IMPORTANT FIX: allow small dataset
         if len(valid_data) < 2:
             return {
                 "message": "Not enough data, assigning default risk",
@@ -745,16 +620,13 @@ def classify_risk_xgb(
                 "results": []
             }
 
-        # -------- Feature Matrix --------
         revenues = np.array(
             [d["revenue"] for d in valid_data]
         ).reshape(-1, 1)
 
-        # -------- Rule-based fallback (ALWAYS WORKS) --------
         labels = []
         for r in revenues:
             value = r[0]
-
             if value < 1000:
                 labels.append("Low")
             elif value < 5000:
@@ -762,9 +634,7 @@ def classify_risk_xgb(
             else:
                 labels.append("High")
 
-        # 🔥 If dataset small → skip ML and directly assign
         if len(valid_data) < 10:
-
             for i, record in enumerate(valid_data):
                 financial_collection.update_one(
                     {"_id": record["_id"]},
@@ -777,7 +647,6 @@ def classify_risk_xgb(
                 "results": labels
             }
 
-        # -------- ML PART --------
         encoder = LabelEncoder()
         y = encoder.fit_transform(labels)
 
@@ -798,20 +667,16 @@ def classify_risk_xgb(
 
         model.fit(X_train, y_train)
 
-        # -------- Evaluate --------
         y_pred = model.predict(X_test)
         accuracy = accuracy_score(y_test, y_pred)
 
-        # -------- Predict --------
         predictions = model.predict(revenues)
 
         results = []
 
         for i, record in enumerate(valid_data):
-
             risk_label = encoder.inverse_transform([predictions[i]])[0]
 
-            # 🔹 SAVE TO DB (CRITICAL)
             financial_collection.update_one(
                 {"_id": record["_id"]},
                 {"$set": {"risk_level": risk_label}}
@@ -823,7 +688,6 @@ def classify_risk_xgb(
                 "risk": risk_label
             })
 
-        # 🔹 Save model (optional)
         joblib.dump(model, "xgb_risk_model.pkl")
 
         return {
@@ -838,6 +702,7 @@ def classify_risk_xgb(
             status_code=500,
             detail=f"Risk classification failed: {str(e)}"
         )
+
 
 def run_risk_classification(user):
 
@@ -892,7 +757,6 @@ def hash_ml_results(
     normal = 0
 
     for record in data:
-
         risk = record.get("risk_level", "Normal")
 
         if "High" in risk:
@@ -958,20 +822,17 @@ def hash_financial_data(
         "total_records": len(dataset)
     }
 
-## ---------------- BLOCKCHAIN SYSTEM ----------------
+# ---------------- BLOCKCHAIN SYSTEM ----------------
 
 class Blockchain:
 
     def __init__(self):
 
-        # load chain from MongoDB
         self.chain = list(blockchain_collection.find({}, {"_id": 0}).sort("index", 1))
 
-        # create genesis block ONLY if blockchain empty
         if len(self.chain) == 0:
             self.create_genesis_block()
 
-    # ---------------- HASH FUNCTION ----------------
     def calculate_hash(self, index, timestamp, data, previous_hash):
 
         block_string = json.dumps({
@@ -983,7 +844,6 @@ class Blockchain:
 
         return hashlib.sha256(block_string.encode()).hexdigest()
 
-    # ---------------- GENESIS BLOCK ----------------
     def create_genesis_block(self):
 
         genesis_block = {
@@ -1001,500 +861,4 @@ class Blockchain:
         )
 
         self.chain.append(genesis_block)
-
-        blockchain_collection.insert_one(genesis_block)
-
-    # ---------------- ADD BLOCK ----------------
-    def add_block(self, data):
-
-        previous_block = self.chain[-1]
-
-        new_block = {
-            "index": len(self.chain),
-            "timestamp": str(datetime.utcnow()),
-            "data": data,
-            "previous_hash": previous_block["current_hash"]
-        }
-
-        new_block["current_hash"] = self.calculate_hash(
-            new_block["index"],
-            new_block["timestamp"],
-            new_block["data"],
-            new_block["previous_hash"]
-        )
-
-        self.chain.append(new_block)
-
-        blockchain_collection.insert_one(new_block)
-
-        return new_block
-
-    # ---------------- INTEGRITY CHECK ----------------
-    def is_chain_valid(self):
-
-        if len(self.chain) <= 1:
-            return True
-
-        for i in range(1, len(self.chain)):
-
-            current = self.chain[i]
-            previous = self.chain[i - 1]
-
-            recalculated_hash = self.calculate_hash(
-                current["index"],
-                current["timestamp"],
-                current["data"],
-                current["previous_hash"]
-            )
-
-            if current["current_hash"] != recalculated_hash:
-                return False
-
-            if current["previous_hash"] != previous["current_hash"]:
-                return False
-
-        return True
-
-
-# 🔥 Initialize Blockchain
-blockchain = Blockchain()
-
-# ---------------- LOAD BLOCKCHAIN FROM MONGODB ----------------
-
-def load_blockchain_from_db():
-
-    try:
-
-        blocks = list(
-            blockchain_collection.find({}, {"_id": 0}).sort("index", 1)
-        )
-
-        blockchain.chain = []
-
-        # If DB empty → create genesis block
-        if len(blocks) == 0:
-            blockchain.create_genesis_block()
-            print("Genesis block created")
-            return
-
-        for block in blocks:
-
-            # safety check for required fields
-            if not all(k in block for k in ["index", "timestamp", "data", "previous_hash", "current_hash"]):
-                continue
-
-            blockchain.chain.append({
-                "index": block["index"],
-                "timestamp": block["timestamp"],
-                "data": block["data"],
-                "previous_hash": block["previous_hash"],
-                "current_hash": block["current_hash"]
-            })
-
-        print(f"Blockchain loaded successfully ({len(blockchain.chain)} blocks)")
-
-    except Exception as e:
-        print("Blockchain loading error:", str(e))
-
-# ---------------- STARTUP EVENT ----------------
-
-@app.on_event("startup")
-def startup_event():
-
-    print("Loading blockchain from MongoDB...")
-
-    load_blockchain_from_db()
-
-    if blockchain.is_chain_valid():
-        print("Blockchain integrity verified ✅")
-    else:
-        print("Blockchain integrity FAILED ❌")
-
-# ADD BLOCK API
-
-@app.post("/add-block")
-def add_block(user: dict = Depends(require_role(["admin","analyst","auditor"]))):
-
-    current_user = users_collection.find_one({"username": user["sub"]})
-
-    if not current_user:
-        raise HTTPException(status_code=404, detail="User not found ❌")
-
-    data = list(financial_collection.find({
-        "user_id": str(current_user["_id"])
-    }))
-
-    if not data:
-        return {
-            "message": "No financial data uploaded yet",
-            "block_created": False
-        }
-
-    dataset = []
-
-    for record in data:
-        dataset.append({
-            "id": str(record["_id"]),
-            "revenue": record["revenue"],
-            "expense": record["expense"],
-            "risk_level": record.get("risk_level", "Normal")
-        })
-
-    new_block = blockchain.add_block(dataset)
-
-    return {
-        "message": "Block added successfully ✅",
-        "block_index": new_block["index"],
-        "timestamp": new_block["timestamp"],
-        "previous_hash": new_block["previous_hash"],
-        "current_hash": new_block["current_hash"]
-    }
-
-# VIEW BLOCKCHAIN
-
-@app.get("/view-chain")
-def view_chain(user: dict = Depends(require_role(["admin","analyst","auditor"]))):
-
-    try:
-
-        if not blockchain.chain:
-            return {
-                "message": "Blockchain is empty",
-                "length": 0,
-                "is_valid": True,
-                "chain": []
-            }
-
-        return {
-            "message": "Blockchain retrieved successfully",
-            "length": len(blockchain.chain),
-            "is_valid": blockchain.is_chain_valid(),
-            "chain": blockchain.chain
-        }
-
-    except Exception as e:
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Blockchain error: {str(e)}"
-        )
-
-# VERIFY BLOCKCHAIN
-
-@app.get("/verify-integrity")
-def verify_integrity(user: dict = Depends(require_role(["admin","analyst","auditor"]))):
-
-    try:
-
-        valid = blockchain.is_chain_valid()
-
-        if valid:
-            return {
-                "status": "Valid",
-                "icon": "✅",
-                "message": "Blockchain integrity verified successfully",
-                "total_blocks": len(blockchain.chain)
-            }
-
-        return {
-            "status": "Tampered",
-            "icon": "❌",
-            "message": "Blockchain has been modified",
-            "total_blocks": len(blockchain.chain)
-        }
-
-    except Exception as e:
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Integrity verification error: {str(e)}"
-        )
-
-# KPI API
-
-@app.get("/kpis")
-def get_kpis(user: dict = Depends(require_role(["admin","analyst","auditor"]))):
-
-    current_user = users_collection.find_one({"username": user["sub"]})
-
-    if not current_user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    data = list(financial_collection.find({
-        "user_id": str(current_user["_id"])
-    }))
-
-    total_revenue = 0
-    total_expense = 0
-
-    for row in data:
-
-        try:
-            total_revenue += float(row["revenue"])
-        except:
-            pass
-
-        try:
-            total_expense += float(row["expense"])
-        except:
-            pass
-
-    return {
-        "total_revenue": total_revenue,
-        "total_expense": total_expense,
-        "net_profit": total_revenue - total_expense
-    }
-
-# REVENUE FORECAST (GRAPH DATA)
-
-@app.get("/revenue-forecast")
-def revenue_forecast(user: dict = Depends(require_role(["admin","analyst","auditor"]))):
-
-    current_user = users_collection.find_one({"username": user["sub"]})
-
-    if not current_user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    data = list(financial_collection.find({
-        "user_id": str(current_user["_id"])
-    }))
-
-    if not data:
-        return []
-
-    today = datetime.today()
-
-    months = [
-        (today - relativedelta(months=i)).strftime("%b")
-        for i in range(5, -1, -1)
-    ]
-
-    revenues = []
-
-    for row in data:
-        try:
-            revenues.append(float(row["revenue"]))
-        except:
-            continue
-
-    if not revenues:
-        return []
-
-    chunk_size = max(1, len(revenues)//6)
-
-    forecast = []
-
-    for i, month in enumerate(months):
-
-        start = i * chunk_size
-        end = start + chunk_size
-
-        forecast.append({
-            "month": month,
-            "revenue": sum(revenues[start:end])
-        })
-
-    return forecast
-
-# CHART DATA
-
-@app.get("/chart-data")
-def chart_data(
-    user: dict = Depends(require_role(["admin","analyst","auditor"]))
-):
-
-    # 🔹 Get logged-in user
-    current_user = users_collection.find_one({"username": user["sub"]})
-
-    if not current_user:
-        raise HTTPException(status_code=404, detail="User not found ❌")
-
-    # 🔹 Get financial data for that user
-    data = list(
-        financial_collection.find({
-            "user_id": str(current_user["_id"])
-        })
-    )
-
-    if not data:
-        return []
-
-    today = datetime.today()
-
-    months = [
-        (today - relativedelta(months=i)).strftime("%b")
-        for i in range(5, -1, -1)
-    ]
-
-    revenues = []
-    expenses = []
-
-    # 🔹 Safe data extraction
-    for r in data:
-        try:
-            revenues.append(float(r.get("revenue", 0)))
-        except:
-            revenues.append(0)
-
-        try:
-            expenses.append(float(r.get("expense", 0)))
-        except:
-            expenses.append(0)
-
-    chunk_size = max(1, len(revenues) // 6)
-
-    result = []
-
-    for i, m in enumerate(months):
-
-        start = i * chunk_size
-        end = start + chunk_size
-
-        result.append({
-            "month": m,
-            "revenue": sum(revenues[start:end]),
-            "expense": sum(expenses[start:end])
-        })
-
-    return result
-
-@app.get("/dashboard-data")
-def get_dashboard_data(
-    user: dict = Depends(require_role(["admin","analyst","auditor"]))
-):
-
-    try:
-        # 🔹 Get user
-        current_user = users_collection.find_one({"username": user["sub"]})
-
-        if not current_user:
-            raise HTTPException(status_code=404, detail="User not found ❌")
-
-        user_id = str(current_user["_id"])
-
-        # 🔥 IMPORTANT: FETCH DATA ONLY ONCE
-        data = list(financial_collection.find({
-            "user_id": user_id
-        }))
-
-        # 🔹 Empty case
-        if not data:
-            return {
-                "kpis": {
-                    "total_revenue": 0,
-                    "total_expense": 0,
-                    "net_profit": 0
-                },
-                "forecast": [],
-                "chart": [],
-                "prediction": {
-                    "next_month_prediction": 0,
-                    "model_accuracy_r2": 0
-                },
-                "anomaly": {
-                    "high": 0,
-                    "medium": 0,
-                    "low": 0
-                },
-                "blockchain": {
-                    "status": "Unknown"
-                }
-            }
-
-        # =========================
-        # 🔥 KPI CALCULATION
-        # =========================
-
-        total_revenue = 0
-        total_expense = 0
-
-        for r in data:
-            try:
-                total_revenue += float(r.get("revenue", 0))
-            except:
-                pass
-
-            try:
-                total_expense += float(r.get("expense", 0))
-            except:
-                pass
-
-        kpis = {
-            "total_revenue": total_revenue,
-            "total_expense": total_expense,
-            "net_profit": total_revenue - total_expense
-        }
-
-        # =========================
-        # 🔥 RISK COUNT
-        # =========================
-
-        high = medium = low = 0
-
-        for r in data:
-            risk = r.get("risk_level")
-
-            if risk == "High":
-                high += 1
-            elif risk == "Medium":
-                medium += 1
-            elif risk == "Low":
-                low += 1
-
-        anomaly = {
-            "high": high,
-            "medium": medium,
-            "low": low
-        }
-
-        # =========================
-        # 🔥 PREDICTION
-        # =========================
-
-        prediction_data = financial_collection.find_one({
-            "user_id": user_id,
-            "type": "forecast_result"
-        })
-
-        prediction = {
-            "next_month_prediction": 0,
-            "model_accuracy_r2": 0
-        }
-
-        if prediction_data:
-            prediction = {
-                "next_month_prediction": float(prediction_data.get("prediction", 0)),
-                "model_accuracy_r2": float(prediction_data.get("accuracy", 0))
-            }
-
-        # =========================
-        # 🔥 BLOCKCHAIN
-        # =========================
-
-        try:
-            bc = verify_integrity(user)
-            blockchain_status = bc.get("status", "Unknown")
-        except:
-            blockchain_status = "Unknown"
-
-        # =========================
-        # 🔥 FINAL RESPONSE (ALL AT ONCE)
-        # =========================
-
-        return {
-            "kpis": kpis,
-            "forecast": revenue_forecast(user),
-            "chart": chart_data(user),
-            "prediction": prediction,
-            "anomaly": anomaly,
-            "blockchain": {
-                "status": blockchain_status
-            }
-        }
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Dashboard error: {str(e)}"
-        )
-        
+        blockchain_collection.insert_one(dict(genesis_block))
