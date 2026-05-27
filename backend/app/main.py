@@ -466,14 +466,13 @@ def upload_csv(
 def forecast_revenue(
     user: dict = Depends(require_role(["admin", "analyst", "auditor"]))
 ):
-    # ── 1. Fetch user ──────────────────────────────────────────
     current_user = users_collection.find_one({"username": user["sub"]})
     if not current_user:
         raise HTTPException(status_code=404, detail="User not found ❌")
 
     user_id = str(current_user["_id"])
 
-    # ── 2. Fetch only raw financial rows (not forecast results) ─
+    # 🔹 Get data in correct order
     data = list(
         financial_collection.find({
             "user_id": user_id,
@@ -481,101 +480,83 @@ def forecast_revenue(
                 {"type": {"$exists": False}},
                 {"type": {"$ne": "forecast_result"}}
             ]
-        }).sort("created_at", 1)   # ✅ FIX: chronological order matters
+        }).sort("created_at", 1)
     )
 
     if len(data) < 3:
         return {
-            "next_month_prediction": 0,
+            "next_prediction": 0,
             "model_accuracy_r2": 0,
-            "months_used_for_training": [],
-            "message": "Need at least 3 records for forecasting"
+            "message": "Need at least 3 data points"
         }
 
-    # ── 3. Extract valid revenues ───────────────────────────────
-    revenues = []
+    # 🔹 Extract revenue sequence (DAILY / ROW-wise)
+    series = []
     for row in data:
         try:
             val = float(row.get("revenue", 0))
             if val > 0:
-                revenues.append(val)
+                series.append(val)
         except:
             continue
 
-    if len(revenues) < 3:
+    if len(series) < 3:
         return {
-            "next_month_prediction": 0,
-            "model_accuracy_r2": 0,
-            "months_used_for_training": revenues
+            "next_prediction": 0,
+            "model_accuracy_r2": 0
         }
 
-    # ── 4. Group into monthly buckets (6–12 months) ─────────────
-    #    ✅ FIX: dynamic months instead of hardcoded 6
-    num_months = min(12, max(6, len(revenues) // 3))
-    chunk_size = max(1, len(revenues) // num_months)
+    series = np.array(series, dtype=float)
 
-    monthly_totals = []
-    for i in range(num_months):
-        start = i * chunk_size
-        end = (start + chunk_size) if (i < num_months - 1) else len(revenues)
-        if start < len(revenues):
-            monthly_totals.append(sum(revenues[start:end]))
+    # 🔥 OPTIONAL: reduce noise for large data
+    if len(series) > 50:
+        chunk_size = max(1, len(series) // 12)
+        series = np.array([
+            sum(series[i:i+chunk_size])
+            for i in range(0, len(series), chunk_size)
+        ])
 
-    monthly_totals = np.array(monthly_totals, dtype=float)
-
-    # ── 5. Create lag features ──────────────────────────────────
-    #    ✅ FIX: model now uses previous N months to predict next
-    #    e.g. [month1, month2, month3] → predict month4
-    def create_lag_features(series: np.ndarray, n_lags: int):
+    # 🔹 Lag feature creation (VERY IMPORTANT)
+    def create_lag_features(series, n_lags):
         X, y = [], []
         for i in range(n_lags, len(series)):
-            X.append(series[i - n_lags : i])   # last N months as input
-            y.append(series[i])                 # next month as target
+            X.append(series[i-n_lags:i])
+            y.append(series[i])
         return np.array(X), np.array(y)
 
-    n_lags = min(3, len(monthly_totals) - 1)   # use up to 3 lag months
-    X, y = create_lag_features(monthly_totals, n_lags)
+    n_lags = min(3, len(series)-1)
+    X, y = create_lag_features(series, n_lags)
 
     if len(X) < 2:
-        # Not enough samples for train/test — train on everything
         model = LinearRegression()
         model.fit(X, y)
-        accuracy = float(max(0.0, model.score(X, y)))
-
+        accuracy = float(model.score(X, y))
     else:
-        # ── 6. Proper train/test split ──────────────────────────
-        #    ✅ FIX: time-series split (no shuffle — order matters)
-        split_idx = max(1, int(len(X) * 0.8))
-        X_train, X_test = X[:split_idx], X[split_idx:]
-        y_train, y_test = y[:split_idx], y[split_idx:]
+        split = int(len(X) * 0.8)
+        X_train, X_test = X[:split], X[split:]
+        y_train, y_test = y[:split], y[split:]
 
         model = LinearRegression()
         model.fit(X_train, y_train)
 
-        # ── 7. Real R² accuracy ─────────────────────────────────
-        #    ✅ FIX: accuracy is now actually computed (was 1.0)
         if len(X_test) > 0:
             y_pred = model.predict(X_test)
-            raw_r2 = r2_score(y_test, y_pred)
-            accuracy = float(max(0.0, min(1.0, raw_r2)))  # clip to [0, 1]
+            accuracy = max(0.0, min(1.0, r2_score(y_test, y_pred)))
         else:
-            accuracy = float(max(0.0, model.score(X_train, y_train)))
+            accuracy = model.score(X_train, y_train)
 
-    # ── 8. Predict next month ───────────────────────────────────
-    last_window = monthly_totals[-n_lags:].reshape(1, -1)
+    # 🔹 Predict next value (daily/next row)
+    last_window = series[-n_lags:].reshape(1, -1)
     prediction = float(model.predict(last_window)[0])
-    prediction = max(0.0, prediction)   # ✅ FIX: no negative revenue
+    prediction = max(0.0, prediction)
 
-    # ── 9. Save model & result ──────────────────────────────────
-    joblib.dump(model, "revenue_model.pkl")
-
+    # 🔹 Save result
     financial_collection.update_one(
         {"user_id": user_id, "type": "forecast_result"},
         {
             "$set": {
                 "prediction": round(prediction, 2),
-                "accuracy":   round(accuracy, 4),
-                "n_lags":     n_lags,
+                "accuracy": round(accuracy, 4),
                 "created_at": datetime.utcnow()
             }
         },
@@ -583,11 +564,12 @@ def forecast_revenue(
     )
 
     return {
-        "next_month_prediction":   round(prediction, 2),
-        "model_accuracy_r2":       round(accuracy, 4),
-        "months_used_for_training": monthly_totals.tolist(),
-        "lags_used":               n_lags
+        "next_prediction": round(prediction, 2),
+        "model_accuracy_r2": round(accuracy, 4),
+        "data_points_used": len(series),
+        "lags_used": n_lags
     }
+    
  # ---------------- XGBOOST RISK CLASSIFICATION ----------------
 
 @app.get("/classify-risk-xgb")
