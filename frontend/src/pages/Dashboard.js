@@ -17,7 +17,7 @@ import {
   Legend
 } from "recharts";
 
-import API_BASE from "../config";   // ✅ USE ENV
+import API_BASE from "../config";  
 import "./Dashboard.css";
 
 function Dashboard() {
