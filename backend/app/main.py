@@ -460,134 +460,387 @@ def upload_csv(
             status_code=500,
             detail=f"CSV processing error: {str(e)}"
         )
-# ---------------- REVENUE FORECAST (FIXED) ----------------
-
 @app.get("/forecast-revenue")
 def forecast_revenue(
     user: dict = Depends(require_role(["admin", "analyst", "auditor"]))
 ):
+    """
+    Forecast next week's revenue using individual transaction data.
+    
+    Process:
+    1. Fetch all individual transactions for user
+    2. Aggregate by week
+    3. Create lag features (last 3 weeks predict next)
+    4. Train linear regression model
+    5. Predict next week
+    """
+    
     # ── 1. Fetch user ──────────────────────────────────────────
     current_user = users_collection.find_one({"username": user["sub"]})
     if not current_user:
         raise HTTPException(status_code=404, detail="User not found ❌")
-
+ 
     user_id = str(current_user["_id"])
-
-    # ── 2. Fetch only raw financial rows (not forecast results) ─
+ 
+    # ── 2. Fetch ALL individual transactions (not forecast results) ─
+    # ✅ KEY CHANGE: Include ALL transactions with revenue
     data = list(
         financial_collection.find({
             "user_id": user_id,
+            "revenue": {"$gt": 0},
             "$or": [
                 {"type": {"$exists": False}},
                 {"type": {"$ne": "forecast_result"}}
             ]
-        }).sort("created_at", 1)   # ✅ FIX: chronological order matters
+        }).sort("created_at", 1)
     )
-
+ 
     if len(data) < 3:
         return {
+            "next_week_prediction": 0,
             "next_month_prediction": 0,
             "model_accuracy_r2": 0,
-            "months_used_for_training": [],
-            "message": "Need at least 3 records for forecasting"
+            "weeks_used_for_training": [],
+            "message": f"Need at least 3 transactions for forecasting (found {len(data)})"
         }
-
-    # ── 3. Extract valid revenues ───────────────────────────────
-    revenues = []
-    for row in data:
-        try:
-            val = float(row.get("revenue", 0))
-            if val > 0:
-                revenues.append(val)
-        except:
-            continue
-
-    if len(revenues) < 3:
+ 
+    # ── 3. Convert to DataFrame for time-series processing ──────
+    try:
+        df = pd.DataFrame([
+            {
+                "date": record.get("created_at"),
+                "revenue": float(record.get("revenue", 0))
+            }
+            for record in data
+            if record.get("created_at") is not None
+        ])
+ 
+        if df.empty or len(df) < 3:
+            return {
+                "next_week_prediction": 0,
+                "next_month_prediction": 0,
+                "model_accuracy_r2": 0,
+                "weeks_used_for_training": [],
+                "message": "Invalid transaction dates"
+            }
+ 
+        # Sort by date to ensure chronological order
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values("date").reset_index(drop=True)
+ 
+        print(f"Processing {len(df)} transactions from {df['date'].min()} to {df['date'].max()}")
+ 
+    except Exception as e:
+        print(f"Error converting to DataFrame: {e}")
         return {
+            "next_week_prediction": 0,
             "next_month_prediction": 0,
             "model_accuracy_r2": 0,
-            "months_used_for_training": revenues
+            "weeks_used_for_training": [],
+            "message": f"Error processing dates: {str(e)}"
         }
-
-    # ── 4. Group into monthly buckets (6–12 months) ─────────────
-    #    ✅ FIX: dynamic months instead of hardcoded 6
-    num_months = min(12, max(6, len(revenues) // 3))
-    chunk_size = max(1, len(revenues) // num_months)
-
-    monthly_totals = []
-    for i in range(num_months):
-        start = i * chunk_size
-        end = (start + chunk_size) if (i < num_months - 1) else len(revenues)
-        if start < len(revenues):
-            monthly_totals.append(sum(revenues[start:end]))
-
-    monthly_totals = np.array(monthly_totals, dtype=float)
-
+ 
+    # ── 4. Aggregate by WEEK (not month) ───────────────────────
+    # ✅ KEY CHANGE: Weekly aggregation for better predictions
+    df["week"] = df["date"].dt.to_period("W")
+    weekly_revenue = df.groupby("week")["revenue"].sum().values.astype(float)
+ 
+    print(f"Aggregated into {len(weekly_revenue)} weeks")
+ 
+    if len(weekly_revenue) < 3:
+        return {
+            "next_week_prediction": 0,
+            "next_month_prediction": 0,
+            "model_accuracy_r2": 0,
+            "weeks_used_for_training": weekly_revenue.tolist(),
+            "message": f"Need at least 3 weeks of data (found {len(weekly_revenue)})"
+        }
+ 
     # ── 5. Create lag features ──────────────────────────────────
-    #    ✅ FIX: model now uses previous N months to predict next
-    #    e.g. [month1, month2, month3] → predict month4
+    # ✅ KEY CHANGE: Uses last 3 weeks to predict next week
+    # Example: [week1, week2, week3] → predict week4
     def create_lag_features(series: np.ndarray, n_lags: int):
+        """
+        Create lag features for time series prediction.
+        
+        Args:
+            series: Array of weekly revenues
+            n_lags: Number of previous weeks to use (default 3)
+            
+        Returns:
+            X: Feature matrix [[week1, week2, week3], [week2, week3, week4], ...]
+            y: Target values [week4, week5, week6, ...]
+        """
         X, y = [], []
         for i in range(n_lags, len(series)):
-            X.append(series[i - n_lags : i])   # last N months as input
-            y.append(series[i])                 # next month as target
+            X.append(series[i - n_lags : i])   # Last N weeks as features
+            y.append(series[i])                  # Next week as target
         return np.array(X), np.array(y)
-
-    n_lags = min(3, len(monthly_totals) - 1)   # use up to 3 lag months
-    X, y = create_lag_features(monthly_totals, n_lags)
-
+ 
+    # ✅ KEY CHANGE: Dynamic n_lags based on available weeks
+    n_lags = min(3, len(weekly_revenue) - 1)   # Use 1-3 previous weeks
+    
+    print(f"Creating lag features with n_lags={n_lags}")
+ 
+    X, y = create_lag_features(weekly_revenue, n_lags)
+ 
     if len(X) < 2:
-        # Not enough samples for train/test — train on everything
+        # Not enough samples for train/test — train on all data
+        print("Warning: Less than 2 samples, training on all data")
         model = LinearRegression()
         model.fit(X, y)
         accuracy = float(max(0.0, model.score(X, y)))
-
+        train_samples = len(X)
+        test_samples = 0
+ 
     else:
-        # ── 6. Proper train/test split ──────────────────────────
-        #    ✅ FIX: time-series split (no shuffle — order matters)
+        # ── 6. Time-series split (80/20, chronological) ─────────
+        # ✅ KEY CHANGE: NO shuffling - time order matters!
         split_idx = max(1, int(len(X) * 0.8))
         X_train, X_test = X[:split_idx], X[split_idx:]
         y_train, y_test = y[:split_idx], y[split_idx:]
-
+ 
+        print(f"Training on {len(X_train)} samples, testing on {len(X_test)} samples")
+ 
         model = LinearRegression()
         model.fit(X_train, y_train)
-
-        # ── 7. Real R² accuracy ─────────────────────────────────
-        #    ✅ FIX: accuracy is now actually computed (was 1.0)
+ 
+        # ── 7. Calculate real R² accuracy ───────────────────────
+        # ✅ KEY CHANGE: Actually compute R², don't hardcode 1.0!
         if len(X_test) > 0:
             y_pred = model.predict(X_test)
-            raw_r2 = r2_score(y_test, y_pred)
-            accuracy = float(max(0.0, min(1.0, raw_r2)))  # clip to [0, 1]
+            try:
+                raw_r2 = r2_score(y_test, y_pred)
+                accuracy = float(max(0.0, min(1.0, raw_r2)))  # Clip to [0, 1]
+            except Exception as e:
+                print(f"Warning: Could not compute R² score: {e}")
+                accuracy = float(max(0.0, model.score(X_train, y_train)))
         else:
             accuracy = float(max(0.0, model.score(X_train, y_train)))
-
-    # ── 8. Predict next month ───────────────────────────────────
-    last_window = monthly_totals[-n_lags:].reshape(1, -1)
-    prediction = float(model.predict(last_window)[0])
-    prediction = max(0.0, prediction)   # ✅ FIX: no negative revenue
-
-    # ── 9. Save model & result ──────────────────────────────────
-    joblib.dump(model, "revenue_model.pkl")
-
-    financial_collection.update_one(
-        {"user_id": user_id, "type": "forecast_result"},
-        {
-            "$set": {
-                "prediction": round(prediction, 2),
-                "accuracy":   round(accuracy, 4),
-                "n_lags":     n_lags,
-                "created_at": datetime.utcnow()
-            }
-        },
-        upsert=True
-    )
-
+ 
+        train_samples = len(X_train)
+        test_samples = len(X_test)
+ 
+    # ── 8. Predict NEXT WEEK ────────────────────────────────────
+    # ✅ KEY CHANGE: Use last N weeks to predict next week
+    last_window = weekly_revenue[-n_lags:].reshape(1, -1)
+    week_prediction = float(model.predict(last_window)[0])
+    week_prediction = max(0.0, week_prediction)  # No negative revenue
+ 
+    # ✅ BONUS: Also estimate next month (4 weeks ahead)
+    # For months: sum the predicted weeks or use a multiplier
+    month_prediction = week_prediction * 4.0  # 4 weeks per month (estimate)
+ 
+    print(f"Prediction: Next week = ₹{week_prediction:,.2f}, Next month ≈ ₹{month_prediction:,.2f}")
+ 
+    # ── 9. Save model & results ─────────────────────────────────
+    try:
+        joblib.dump(model, "revenue_model.pkl")
+    except Exception as e:
+        print(f"Warning: Could not save model: {e}")
+ 
+    # Save forecast to database
+    try:
+        financial_collection.update_one(
+            {"user_id": user_id, "type": "forecast_result"},
+            {
+                "$set": {
+                    "prediction_week": round(week_prediction, 2),
+                    "prediction_month": round(month_prediction, 2),
+                    "accuracy": round(accuracy, 4),
+                    "n_lags": n_lags,
+                    "weeks_used": len(weekly_revenue),
+                    "train_samples": train_samples,
+                    "test_samples": test_samples,
+                    "created_at": datetime.utcnow()
+                }
+            },
+            upsert=True
+        )
+    except Exception as e:
+        print(f"Warning: Could not save forecast to DB: {e}")
+ 
+    # ── 10. Return comprehensive response ────────────────────────
     return {
-        "next_month_prediction":   round(prediction, 2),
-        "model_accuracy_r2":       round(accuracy, 4),
-        "months_used_for_training": monthly_totals.tolist(),
-        "lags_used":               n_lags
+        "message": "Revenue forecast completed ✅",
+        "next_week_prediction": round(week_prediction, 2),
+        "next_month_prediction": round(month_prediction, 2),
+        "model_accuracy_r2": round(accuracy, 4),
+        "weeks_used_for_training": weekly_revenue.tolist(),
+        "lags_used": n_lags,
+        "training_samples": train_samples,
+        "testing_samples": test_samples,
+        "total_transactions": len(data),
+        "date_range": {
+            "start": df["date"].min().isoformat() if not df.empty else None,
+            "end": df["date"].max().isoformat() if not df.empty else None
+        }
     }
+ 
+ 
+# ============================================================================
+# ✅ ALTERNATIVE: FORECAST WITH XGBOOST (For more complex patterns)
+# ============================================================================
+ 
+@app.get("/forecast-revenue-xgboost")
+def forecast_revenue_xgboost(
+    user: dict = Depends(require_role(["admin", "analyst", "auditor"]))
+):
+    """
+    Advanced revenue forecasting using XGBoost regressor.
+    Better for non-linear patterns and seasonal trends.
+    """
+    
+    current_user = users_collection.find_one({"username": user["sub"]})
+    if not current_user:
+        raise HTTPException(status_code=404, detail="User not found ❌")
+ 
+    user_id = str(current_user["_id"])
+ 
+    # Fetch individual transactions
+    data = list(
+        financial_collection.find({
+            "user_id": user_id,
+            "revenue": {"$gt": 0},
+            "$or": [
+                {"type": {"$exists": False}},
+                {"type": {"$ne": "forecast_result"}}
+            ]
+        }).sort("created_at", 1)
+    )
+ 
+    if len(data) < 5:
+        return {"message": "Need at least 5 transactions", "prediction": 0}
+ 
+    # Create time series
+    df = pd.DataFrame([
+        {
+            "date": record.get("created_at"),
+            "revenue": float(record.get("revenue", 0))
+        }
+        for record in data
+    ])
+ 
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").reset_index(drop=True)
+ 
+    # Weekly aggregation
+    df["week"] = df["date"].dt.to_period("W")
+    weekly_revenue = df.groupby("week")["revenue"].sum().values.astype(float)
+ 
+    if len(weekly_revenue) < 5:
+        return {"message": "Need at least 5 weeks of data", "prediction": 0}
+ 
+    # Create advanced features
+    def create_advanced_features(series, n_lags=3):
+        X, y = [], []
+        for i in range(n_lags, len(series)):
+            # Lag features
+            lags = list(series[i-n_lags:i])
+            
+            # Rolling statistics
+            window = series[max(0, i-7):i]  # Last 7 weeks
+            rolling_mean = float(np.mean(window)) if len(window) > 0 else 0
+            rolling_std = float(np.std(window)) if len(window) > 1 else 0
+            
+            # Trend
+            if i >= 2:
+                trend = (series[i-1] - series[i-2]) / (series[i-2] + 0.01)
+            else:
+                trend = 0
+            
+            # Combine features
+            features = lags + [rolling_mean, rolling_std, trend]
+            X.append(features)
+            y.append(series[i])
+        
+        return np.array(X), np.array(y)
+ 
+    X, y = create_advanced_features(weekly_revenue, n_lags=3)
+ 
+    if len(X) < 3:
+        return {"message": "Insufficient data for advanced forecasting", "prediction": 0}
+ 
+    # Train/test split
+    split_idx = max(1, int(len(X) * 0.8))
+    X_train, X_test = X[:split_idx], X[split_idx:]
+    y_train, y_test = y[:split_idx], y[split_idx:]
+ 
+    # Train XGBoost model
+    from xgboost import XGBRegressor
+    
+    model = XGBRegressor(
+        n_estimators=100,
+        max_depth=5,
+        learning_rate=0.1,
+        random_state=42,
+        verbosity=0
+    )
+    
+    model.fit(X_train, y_train)
+ 
+    # Evaluate
+    if len(X_test) > 0:
+        y_pred = model.predict(X_test)
+        accuracy = float(r2_score(y_test, y_pred))
+    else:
+        accuracy = float(model.score(X_train, y_train))
+ 
+    # Predict next week
+    last_features = X[-1].reshape(1, -1)  # Last observed features
+    prediction = float(model.predict(last_features)[0])
+    prediction = max(0.0, prediction)
+ 
+    return {
+        "message": "XGBoost forecast completed ✅",
+        "next_week_prediction": round(prediction, 2),
+        "next_month_prediction": round(prediction * 4, 2),
+        "model_accuracy_r2": round(accuracy, 4),
+        "model_type": "XGBoost (advanced)",
+        "weeks_used": len(weekly_revenue),
+        "total_transactions": len(data)
+    }
+ 
+ 
+# ============================================================================
+# ✅ UTILITY: GET FORECAST STATS
+# ============================================================================
+ 
+@app.get("/forecast-stats")
+def get_forecast_stats(
+    user: dict = Depends(require_role(["admin", "analyst", "auditor"]))
+):
+    """Get latest forecast statistics for dashboard"""
+    
+    current_user = users_collection.find_one({"username": user["sub"]})
+    if not current_user:
+        raise HTTPException(status_code=404, detail="User not found ❌")
+ 
+    user_id = str(current_user["_id"])
+ 
+    # Fetch latest forecast
+    forecast = financial_collection.find_one(
+        {"user_id": user_id, "type": "forecast_result"},
+        sort=[("created_at", -1)]
+    )
+ 
+    if not forecast:
+        return {
+            "has_forecast": False,
+            "next_week_prediction": 0,
+            "next_month_prediction": 0,
+            "accuracy": 0
+        }
+ 
+    return {
+        "has_forecast": True,
+        "next_week_prediction": forecast.get("prediction_week", 0),
+        "next_month_prediction": forecast.get("prediction_month", 0),
+        "accuracy": forecast.get("accuracy", 0),
+        "weeks_used": forecast.get("weeks_used", 0),
+        "created_at": forecast.get("created_at").isoformat() if forecast.get("created_at") else None
+    }
+ 
  # ---------------- XGBOOST RISK CLASSIFICATION ----------------
 
 @app.get("/classify-risk-xgb")
@@ -1339,6 +1592,7 @@ def get_dashboard_data(
         }
 
         # =========================
+        
         # 🔥 PREDICTION
         # =========================
 
