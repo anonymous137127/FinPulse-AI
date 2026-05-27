@@ -276,154 +276,66 @@ def upload_csv(
     try:
         df = pd.read_csv(file.file)
 
-        # ── Clean column names ─────────────────────────────────
+        # 🔹 Clean columns
         df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
         df = df.replace(r'[\$,₹,]', '', regex=True)
 
-        print("Detected columns:", list(df.columns))
-
-        # ══════════════════════════════════════════════════
-        # ✅ FIX 1: SMART COLUMN DETECTION
-        # Keyword matching — never picks date/id/quantity
-        # ══════════════════════════════════════════════════
-
-        # Keywords to identify revenue column
+        # 🔹 Column detection
         REVENUE_KEYWORDS = ["revenue", "income", "sales", "earnings", "turnover"]
-        # Keywords to identify expense/cost column
         EXPENSE_KEYWORDS = ["expense", "expenses", "cost", "costs", "spending", "price"]
-        # Columns to always skip (never treat as revenue/expense)
-        SKIP_COLS = ["date", "month", "year", "week", "day", "id",
-                     "order_id", "index", "quantity", "qty", "count"]
+        SKIP_COLS = ["date", "month", "year", "week", "day", "id", "quantity"]
 
-        def find_col(df, keywords, skip):
-            """Find first column whose name contains any keyword."""
+        def find_col(df, keywords):
             for kw in keywords:
                 for col in df.columns:
-                    if kw in col and col not in skip:
+                    if kw in col and col not in SKIP_COLS:
                         return col
             return None
 
-        revenue_col = find_col(df, REVENUE_KEYWORDS, SKIP_COLS)
-        expense_col = find_col(df, EXPENSE_KEYWORDS, SKIP_COLS)
+        revenue_col = find_col(df, REVENUE_KEYWORDS)
+        expense_col = find_col(df, EXPENSE_KEYWORDS)
 
-        # Fallback: first two pure numeric cols (excluding skip list)
-        if not revenue_col or not expense_col:
-            numeric_cols = []
-            for col in df.columns:
-                if col in SKIP_COLS:
-                    continue
-                converted = pd.to_numeric(df[col], errors="coerce")
-                # Only accept if >80% values are valid numbers
-                if converted.notna().sum() / max(len(df), 1) > 0.8:
-                    numeric_cols.append(col)
+        # 🔹 Fallback numeric detection
+        if not revenue_col:
+            numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+            if not numeric_cols:
+                raise HTTPException(status_code=400, detail="No numeric columns ❌")
+            revenue_col = numeric_cols[0]
 
-            if len(numeric_cols) < 1:
-                raise HTTPException(
-                    status_code=400,
-                    detail="No numeric revenue/expense columns found ❌"
-                )
-
-            revenue_col = revenue_col or numeric_cols[0]
-            # If no expense col, derive it (80% of revenue as proxy)
-            expense_col = expense_col or (
-                numeric_cols[1] if len(numeric_cols) > 1 else None
-            )
-
-        print(f"Revenue col: {revenue_col}")
-        print(f"Expense col: {expense_col}")
-
-        # ══════════════════════════════════════════════════
-        # ✅ FIX 2: CONVERT REVENUE & EXPENSE TO NUMERIC
-        # ══════════════════════════════════════════════════
-
+        # 🔹 Convert to numeric
         df[revenue_col] = pd.to_numeric(df[revenue_col], errors="coerce")
 
         if expense_col:
             df[expense_col] = pd.to_numeric(df[expense_col], errors="coerce")
         else:
-            # No expense column: derive as 70% of revenue (cost estimate)
-            df["expense_derived"] = df[revenue_col] * 0.70
+            df["expense_derived"] = df[revenue_col] * 0.7
             expense_col = "expense_derived"
 
-        # ══════════════════════════════════════════════════
-        # ✅ FIX 3: DETECT IF TRANSACTIONAL (needs grouping)
-        # If dataset has a Date column → group by month
-        # ══════════════════════════════════════════════════
-
-        DATE_COL_NAMES = ["date", "order_date", "transaction_date",
-                          "invoice_date", "created_at", "month"]
-
-        date_col = next(
-            (c for c in df.columns if c in DATE_COL_NAMES), None
-        )
+        # 🔥 IMPORTANT FIX: NO GROUPING AT ALL
+        df = df.dropna(subset=[revenue_col])
 
         records = []
 
-        if date_col:
-            # ── Transactional data: aggregate by month ─────
-            try:
-                df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-                df = df.dropna(subset=[date_col])
-                df["_month"] = df[date_col].dt.to_period("M")
+        for idx, row in df.iterrows():
+            revenue = float(row[revenue_col])
+            expense = float(row.get(expense_col, revenue * 0.7))
 
-                monthly_agg = (
-                    df.groupby("_month")
-                    .agg(
-                        revenue=(revenue_col, "sum"),
-                        expense=(expense_col, "sum")
-                    )
-                    .reset_index()
-                    .sort_values("_month")   # chronological order ✅
-                )
-
-                print(f"Grouped into {len(monthly_agg)} monthly buckets")
-
-                # Each row = 1 month, with correct created_at sequence
-                for idx, row in monthly_agg.iterrows():
-                    records.append({
-                        "user_id": user_id,
-                        "revenue": float(row["revenue"]),
-                        "expense": float(row["expense"]),
-                        "month":   str(row["_month"]),   # e.g. "2026-01"
-                        "row_index": idx,
-                        # Unique timestamps preserve order
-                        "created_at": datetime.utcnow() + timedelta(seconds=idx)
-                    })
-
-            except Exception as date_err:
-                print("Date parsing failed, falling back to row-by-row:", date_err)
-                date_col = None   # fall through to row-by-row below
-
-        if not date_col:
-            # ── Already aggregated data (e.g. monthly CSV) ─
-            df = df.dropna(subset=[revenue_col])
-
-            for idx, row in df.iterrows():
-                revenue = row.get(revenue_col)
-                expense = row.get(expense_col, revenue * 0.70)
-
-                if pd.isna(revenue):
-                    continue
-
-                records.append({
-                    "user_id":   user_id,
-                    "revenue":   float(revenue),
-                    "expense":   float(expense) if not pd.isna(expense) else float(revenue) * 0.70,
-                    "row_index": int(idx),
-                    "created_at": datetime.utcnow() + timedelta(seconds=int(idx))
-                })
+            records.append({
+                "user_id": user_id,
+                "revenue": revenue,
+                "expense": expense,
+                "row_index": int(idx),
+                "created_at": datetime.utcnow() + timedelta(seconds=int(idx))
+            })
 
         if not records:
-            raise HTTPException(
-                status_code=400,
-                detail="No valid rows found in CSV ❌"
-            )
+            raise HTTPException(status_code=400, detail="No valid data ❌")
 
-        # ── Delete old data & insert new ──────────────────
+        # 🔹 Replace old data
         financial_collection.delete_many({"user_id": user_id})
         financial_collection.insert_many(records)
 
-        # ── Run ML models ──────────────────────────────────
+        # 🔹 Run ML
         try:
             classify_risk_xgb(user)
         except Exception as e:
@@ -434,14 +346,14 @@ def upload_csv(
         except Exception as e:
             print("Forecast ML Error:", e)
 
-        # ── KPIs ───────────────────────────────────────────
+        # 🔹 KPIs
         total_revenue = sum(r["revenue"] for r in records)
         total_expense = sum(r["expense"] for r in records)
 
         return {
-            "message": "CSV uploaded + AI analysis completed ✅",
-            "rows_inserted":       len(records),
-            "data_type_detected":  "transactional (grouped by month)" if date_col else "pre-aggregated",
+            "message": "CSV uploaded successfully ✅",
+            "rows_inserted": len(records),
+            "data_type": "row-wise (no grouping)",
             "columns_used": {
                 "revenue": revenue_col,
                 "expense": expense_col
@@ -449,17 +361,13 @@ def upload_csv(
             "kpis": {
                 "total_revenue": round(total_revenue, 2),
                 "total_expense": round(total_expense, 2),
-                "net_profit":    round(total_revenue - total_expense, 2)
+                "net_profit": round(total_revenue - total_expense, 2)
             }
         }
 
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"CSV processing error: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=str(e))
+    
 # ---------------- REVENUE FORECAST (FIXED) ----------------
 
 @app.get("/forecast-revenue")
