@@ -1303,4 +1303,3 @@ def get_dashboard_data(
             status_code=500,
             detail=f"Dashboard error: {str(e)}"
         )
-        
