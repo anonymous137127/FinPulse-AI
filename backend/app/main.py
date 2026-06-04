@@ -509,163 +509,188 @@ def classify_risk_xgb(
     user: dict = Depends(require_role(["admin", "analyst", "auditor"]))
 ):
     try:
-        # 🔹 Get logged-in user
         current_user = users_collection.find_one({"username": user["sub"]})
-
         if not current_user:
             raise HTTPException(status_code=404, detail="User not found ❌")
 
         user_id = str(current_user["_id"])
-
-        # 🔹 Get financial data
-        data = list(financial_collection.find({
-            "user_id": user_id
-        }))
+        data = list(financial_collection.find({"user_id": user_id}))
 
         if not data:
-            return {
-                "message": "No financial data uploaded yet",
-                "total_records": 0,
-                "results": []
-            }
+            return {"message": "No financial data uploaded yet", "total_records": 0, "results": []}
 
-        # 🔹 Prepare valid data
+        # -------- Feature Extraction --------
         valid_data = []
 
         for record in data:
             try:
-                revenue = float(record.get("revenue", 0))
+                revenue  = float(record.get("revenue", 0))
+                expenses = float(record.get("expenses", 0))
+                debt     = float(record.get("debt", 0))
+
+                if revenue <= 0:
+                    continue  # skip bad records
+
+                # --- Real-world financial metrics ---
+                net_profit        = revenue - expenses
+                profit_margin     = net_profit / revenue           # -∞ to 1.0
+                expense_ratio     = expenses / revenue             # 0 to ∞
+                debt_to_revenue   = debt / revenue if revenue > 0 else 0
+
                 valid_data.append({
-                    "_id": record["_id"],
-                    "revenue": revenue
+                    "_id":             record["_id"],
+                    "revenue":         revenue,
+                    "expenses":        expenses,
+                    "debt":            debt,
+                    "net_profit":      net_profit,
+                    "profit_margin":   profit_margin,
+                    "expense_ratio":   expense_ratio,
+                    "debt_to_revenue": debt_to_revenue,
                 })
-            except:
+            except Exception:
                 continue
 
-        # 🔥 IMPORTANT FIX: allow small dataset
         if len(valid_data) < 2:
-            return {
-                "message": "Not enough data, assigning default risk",
-                "total_records": len(valid_data),
-                "results": []
-            }
+            return {"message": "Not enough valid data", "total_records": len(valid_data), "results": []}
 
-        # -------- Feature Matrix --------
-        revenues = np.array(
-            [d["revenue"] for d in valid_data]
-        ).reshape(-1, 1)
+        # -------- Real-World Risk Scoring --------
+        def compute_risk_score(record):
+            """
+            Lower score = safer. Each metric adds a penalty:
+              profit_margin  → negative margin is a red flag
+              expense_ratio  → spending more than you earn = high risk
+              debt_to_revenue → heavy debt load = high risk
+            """
+            score = 0
 
-        # -------- Rule-based fallback (ALWAYS WORKS) --------
-        labels = []
-        for r in revenues:
-            value = r[0]
+            pm = record["profit_margin"]
+            er = record["expense_ratio"]
+            dr = record["debt_to_revenue"]
 
-            if value < 1000:
-                labels.append("Low")
-            elif value < 5000:
-                labels.append("Medium")
+            # Profit margin scoring (weight: 40%)
+            if pm >= 0.20:
+                score += 0      # healthy margin
+            elif pm >= 0.05:
+                score += 20     # acceptable
+            elif pm >= 0:
+                score += 40     # thin margin
             else:
-                labels.append("High")
+                score += 70     # loss-making = high risk
 
-        # 🔥 If dataset small → skip ML and directly assign
-        if len(valid_data) < 10:
+            # Expense ratio scoring (weight: 35%)
+            if er <= 0.60:
+                score += 0      # low spend vs revenue
+            elif er <= 0.80:
+                score += 15
+            elif er <= 1.00:
+                score += 35     # barely breaking even
+            else:
+                score += 60     # spending more than earning
 
-            for i, record in enumerate(valid_data):
-                financial_collection.update_one(
-                    {"_id": record["_id"]},
-                    {"$set": {"risk_level": labels[i]}}
-                )
+            # Debt-to-revenue scoring (weight: 25%)
+            if dr <= 0.30:
+                score += 0      # low debt
+            elif dr <= 0.60:
+                score += 10
+            elif dr <= 1.00:
+                score += 25
+            else:
+                score += 40     # debt exceeds annual revenue
 
-            return {
-                "message": "Rule-based risk assigned ✅",
-                "total_records": len(valid_data),
-                "results": labels
-            }
+            return score  # 0–170 range
 
-        # -------- ML PART --------
-        encoder = LabelEncoder()
-        y = encoder.fit_transform(labels)
+        def score_to_label(score):
+            if score <= 30:
+                return "Low"
+            elif score <= 70:
+                return "Medium"
+            else:
+                return "High"
 
-        X_train, X_test, y_train, y_test = train_test_split(
-            revenues,
-            y,
-            test_size=0.2,
-            random_state=42
-        )
-
-        model = XGBClassifier(
-            n_estimators=100,
-            max_depth=3,
-            learning_rate=0.1,
-            random_state=42,
-            eval_metric="mlogloss"
-        )
-
-        model.fit(X_train, y_train)
-
-        # -------- Evaluate --------
-        y_pred = model.predict(X_test)
-        accuracy = accuracy_score(y_test, y_pred)
-
-        # -------- Predict --------
-        predictions = model.predict(revenues)
-
+        # -------- Apply Scoring --------
         results = []
 
-        for i, record in enumerate(valid_data):
+        for record in valid_data:
+            score      = compute_risk_score(record)
+            risk_label = score_to_label(score)
 
-            risk_label = encoder.inverse_transform([predictions[i]])[0]
-
-            # 🔹 SAVE TO DB (CRITICAL)
             financial_collection.update_one(
                 {"_id": record["_id"]},
-                {"$set": {"risk_level": risk_label}}
+                {"$set": {
+                    "risk_level":       risk_label,
+                    "risk_score":       score,
+                    "profit_margin":    round(record["profit_margin"], 4),
+                    "expense_ratio":    round(record["expense_ratio"], 4),
+                    "debt_to_revenue":  round(record["debt_to_revenue"], 4),
+                }}
             )
 
             results.append({
-                "id": str(record["_id"]),
-                "revenue": record["revenue"],
-                "risk": risk_label
+                "id":              str(record["_id"]),
+                "revenue":         record["revenue"],
+                "expenses":        record["expenses"],
+                "net_profit":      round(record["net_profit"], 2),
+                "profit_margin":   f"{round(record['profit_margin'] * 100, 1)}%",
+                "expense_ratio":   f"{round(record['expense_ratio'] * 100, 1)}%",
+                "debt_to_revenue": f"{round(record['debt_to_revenue'] * 100, 1)}%",
+                "risk_score":      score,
+                "risk":            risk_label,
             })
 
-        # 🔹 Save model (optional)
-        joblib.dump(model, "xgb_risk_model.pkl")
+        # -------- Optional: ML on top (needs 10+ records) --------
+        if len(valid_data) >= 10:
+            feature_matrix = np.array([
+                [r["profit_margin"], r["expense_ratio"], r["debt_to_revenue"]]
+                for r in valid_data
+            ])
+            labels = [r["risk"] for r in results]
+
+            encoder = LabelEncoder()
+            y = encoder.fit_transform(labels)
+
+            X_train, X_test, y_train, y_test = train_test_split(
+                feature_matrix, y, test_size=0.2, random_state=42
+            )
+
+            model = XGBClassifier(
+                n_estimators=100,
+                max_depth=3,
+                learning_rate=0.1,
+                random_state=42,
+                eval_metric="mlogloss"
+            )
+            model.fit(X_train, y_train)
+
+            y_pred    = model.predict(X_test)
+            accuracy  = accuracy_score(y_test, y_pred)
+            ml_labels = encoder.inverse_transform(model.predict(feature_matrix))
+
+            # Overwrite rule-based label with ML prediction
+            for i, record in enumerate(valid_data):
+                ml_risk = ml_labels[i]
+                financial_collection.update_one(
+                    {"_id": record["_id"]},
+                    {"$set": {"risk_level": ml_risk, "classified_by": "xgboost"}}
+                )
+                results[i]["risk"]           = ml_risk
+                results[i]["classified_by"]  = "xgboost"
+
+            return {
+                "message":       "XGBoost multi-factor risk classification ✅",
+                "accuracy":      round(float(accuracy), 4),
+                "total_records": len(valid_data),
+                "results":       results,
+            }
 
         return {
-            "message": "XGBoost risk classification completed ✅",
-            "accuracy": round(float(accuracy), 4),
+            "message":       "Rule-based multi-factor risk classification ✅",
             "total_records": len(valid_data),
-            "results": results
+            "results":       results,
         }
 
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Risk classification failed: {str(e)}"
-        )
-
-def run_risk_classification(user):
-
-    current_user = users_collection.find_one({"username": user["sub"]})
-    user_id = str(current_user["_id"])
-
-    data = list(financial_collection.find({"user_id": user_id}))
-
-    for record in data:
-        revenue = float(record.get("revenue", 0))
-
-        if revenue < 1000:
-            risk = "Low"
-        elif revenue < 5000:
-            risk = "Medium"
-        else:
-            risk = "High"
-
-        financial_collection.update_one(
-            {"_id": record["_id"]},
-            {"$set": {"risk_level": risk}}
-        )
-
+        raise HTTPException(status_code=500, detail=f"Risk classification failed: {str(e)}")
+    
 # ---------------- HASH ML RESULTS ----------------
 
 @app.get("/hash-ml-results")
