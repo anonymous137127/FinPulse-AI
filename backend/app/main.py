@@ -529,13 +529,12 @@ def classify_risk_xgb(
                 debt     = float(record.get("debt", 0))
 
                 if revenue <= 0:
-                    continue  # skip bad records
+                    continue
 
-                # --- Real-world financial metrics ---
-                net_profit        = revenue - expenses
-                profit_margin     = net_profit / revenue           # -∞ to 1.0
-                expense_ratio     = expenses / revenue             # 0 to ∞
-                debt_to_revenue   = debt / revenue if revenue > 0 else 0
+                net_profit      = revenue - expenses
+                profit_margin   = net_profit / revenue
+                expense_ratio   = expenses / revenue
+                debt_to_revenue = debt / revenue
 
                 valid_data.append({
                     "_id":             record["_id"],
@@ -553,65 +552,78 @@ def classify_risk_xgb(
         if len(valid_data) < 2:
             return {"message": "Not enough valid data", "total_records": len(valid_data), "results": []}
 
-        # -------- Real-World Risk Scoring --------
-        def compute_risk_score(record):
-            """
-            Lower score = safer. Each metric adds a penalty:
-              profit_margin  → negative margin is a red flag
-              expense_ratio  → spending more than you earn = high risk
-              debt_to_revenue → heavy debt load = high risk
-            """
-            score = 0
+        # -------- Percentile-Based Scoring (relative ranking) --------
+        # This ensures realistic distribution across Low / Medium / High
+        # even when all records look "similar" in absolute terms
 
+        import numpy as np
+
+        margins   = np.array([r["profit_margin"]   for r in valid_data])
+        expenses_ = np.array([r["expense_ratio"]    for r in valid_data])
+        debts     = np.array([r["debt_to_revenue"]  for r in valid_data])
+
+        def percentile_rank(value, array):
+            """Returns 0–100: how risky this value is relative to peers."""
+            return float(np.sum(array <= value) / len(array) * 100)
+
+        def compute_risk_score(record, margins_arr, expenses_arr, debts_arr):
             pm = record["profit_margin"]
             er = record["expense_ratio"]
             dr = record["debt_to_revenue"]
 
-            # Profit margin scoring (weight: 40%)
-            if pm >= 0.20:
-                score += 0      # healthy margin
-            elif pm >= 0.05:
-                score += 20     # acceptable
-            elif pm >= 0:
-                score += 40     # thin margin
-            else:
-                score += 70     # loss-making = high risk
+            # Higher margin = LOWER risk → invert percentile
+            margin_risk  = 100 - percentile_rank(pm, margins_arr)   # best margin → 0 risk
+            expense_risk = percentile_rank(er, expenses_arr)         # highest expense → 100 risk
+            debt_risk    = percentile_rank(dr, debts_arr)            # most debt → 100 risk
 
-            # Expense ratio scoring (weight: 35%)
-            if er <= 0.60:
-                score += 0      # low spend vs revenue
-            elif er <= 0.80:
-                score += 15
-            elif er <= 1.00:
-                score += 35     # barely breaking even
-            else:
-                score += 60     # spending more than earning
+            # Weighted composite (matches real-world credit scoring weights)
+            # Profit margin:   40%
+            # Expense ratio:   35%
+            # Debt ratio:      25%
+            composite = (
+                margin_risk  * 0.40 +
+                expense_risk * 0.35 +
+                debt_risk    * 0.25
+            )
 
-            # Debt-to-revenue scoring (weight: 25%)
-            if dr <= 0.30:
-                score += 0      # low debt
-            elif dr <= 0.60:
-                score += 10
-            elif dr <= 1.00:
-                score += 25
-            else:
-                score += 40     # debt exceeds annual revenue
+            # ---- Absolute penalty on top (catches genuinely bad records) ----
+            penalty = 0
 
-            return score  # 0–170 range
+            if pm < 0:           penalty += 20   # loss-making
+            if pm < -0.20:       penalty += 15   # heavy loss
+            if er > 1.0:         penalty += 20   # spending > earning
+            if dr > 1.5:         penalty += 15   # debt > 1.5x revenue
+
+            return round(composite + penalty, 2)
+
+        # -------- Label Assignment --------
+        # Bottom 40% → Low, next 35% → Medium, top 25% → High
+        # This guarantees meaningful distribution across all datasets
+
+        scores = []
+        for record in valid_data:
+            s = compute_risk_score(record, margins, expenses_, debts)
+            scores.append(s)
+
+        scores_arr = np.array(scores)
+
+        low_threshold    = float(np.percentile(scores_arr, 40))   # bottom 40% = Low
+        medium_threshold = float(np.percentile(scores_arr, 75))   # next 35% = Medium
+                                                                   # top 25% = High
 
         def score_to_label(score):
-            if score <= 30:
+            if score <= low_threshold:
                 return "Low"
-            elif score <= 70:
+            elif score <= medium_threshold:
                 return "Medium"
             else:
                 return "High"
 
-        # -------- Apply Scoring --------
+        # -------- Apply + Save --------
         results = []
 
-        for record in valid_data:
-            score      = compute_risk_score(record)
+        for i, record in enumerate(valid_data):
+            score      = scores[i]
             risk_label = score_to_label(score)
 
             financial_collection.update_one(
@@ -622,6 +634,7 @@ def classify_risk_xgb(
                     "profit_margin":    round(record["profit_margin"], 4),
                     "expense_ratio":    round(record["expense_ratio"], 4),
                     "debt_to_revenue":  round(record["debt_to_revenue"], 4),
+                    "classified_by":    "rule_percentile",
                 }}
             )
 
@@ -637,55 +650,84 @@ def classify_risk_xgb(
                 "risk":            risk_label,
             })
 
-        # -------- Optional: ML on top (needs 10+ records) --------
+        # -------- XGBoost ML Layer (10+ records) --------
         if len(valid_data) >= 10:
-            feature_matrix = np.array([
-                [r["profit_margin"], r["expense_ratio"], r["debt_to_revenue"]]
-                for r in valid_data
-            ])
-            labels = [r["risk"] for r in results]
+            try:
+                feature_matrix = np.array([
+                    [r["profit_margin"], r["expense_ratio"], r["debt_to_revenue"]]
+                    for r in valid_data
+                ])
+                labels = [r["risk"] for r in results]
 
-            encoder = LabelEncoder()
-            y = encoder.fit_transform(labels)
+                encoder = LabelEncoder()
+                y = encoder.fit_transform(labels)
 
-            X_train, X_test, y_train, y_test = train_test_split(
-                feature_matrix, y, test_size=0.2, random_state=42
-            )
+                # Need at least 2 classes for XGBoost to work
+                if len(set(labels)) >= 2:
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        feature_matrix, y, test_size=0.2, random_state=42,
+                        stratify=y   # ensures all classes appear in train/test
+                    )
 
-            model = XGBClassifier(
-                n_estimators=100,
-                max_depth=3,
-                learning_rate=0.1,
-                random_state=42,
-                eval_metric="mlogloss"
-            )
-            model.fit(X_train, y_train)
+                    model = XGBClassifier(
+                        n_estimators=100,
+                        max_depth=3,
+                        learning_rate=0.1,
+                        random_state=42,
+                        eval_metric="mlogloss"
+                    )
+                    model.fit(X_train, y_train)
 
-            y_pred    = model.predict(X_test)
-            accuracy  = accuracy_score(y_test, y_pred)
-            ml_labels = encoder.inverse_transform(model.predict(feature_matrix))
+                    y_pred    = model.predict(X_test)
+                    accuracy  = accuracy_score(y_test, y_pred)
+                    ml_preds  = encoder.inverse_transform(model.predict(feature_matrix))
 
-            # Overwrite rule-based label with ML prediction
-            for i, record in enumerate(valid_data):
-                ml_risk = ml_labels[i]
-                financial_collection.update_one(
-                    {"_id": record["_id"]},
-                    {"$set": {"risk_level": ml_risk, "classified_by": "xgboost"}}
-                )
-                results[i]["risk"]           = ml_risk
-                results[i]["classified_by"]  = "xgboost"
+                    for i, record in enumerate(valid_data):
+                        ml_risk = ml_preds[i]
+                        financial_collection.update_one(
+                            {"_id": record["_id"]},
+                            {"$set": {
+                                "risk_level":    ml_risk,
+                                "classified_by": "xgboost"
+                            }}
+                        )
+                        results[i]["risk"]          = ml_risk
+                        results[i]["classified_by"] = "xgboost"
 
-            return {
-                "message":       "XGBoost multi-factor risk classification ✅",
-                "accuracy":      round(float(accuracy), 4),
-                "total_records": len(valid_data),
-                "results":       results,
-            }
+                    # ---- Distribution summary ----
+                    from collections import Counter
+                    dist = Counter(r["risk"] for r in results)
+
+                    joblib.dump(model, "xgb_risk_model.pkl")
+
+                    return {
+                        "message":       "XGBoost multi-factor risk classification ✅",
+                        "accuracy":      round(float(accuracy), 4),
+                        "total_records": len(valid_data),
+                        "distribution":  dict(dist),   # e.g. {"Low": 200, "Medium": 175, "High": 125}
+                        "thresholds":    {
+                            "low_max":    round(low_threshold, 2),
+                            "medium_max": round(medium_threshold, 2),
+                        },
+                        "results": results,
+                    }
+
+            except Exception as ml_err:
+                # ML failed → fall through to rule-based result
+                print(f"XGBoost failed, using rule-based: {ml_err}")
+
+        from collections import Counter
+        dist = Counter(r["risk"] for r in results)
 
         return {
-            "message":       "Rule-based multi-factor risk classification ✅",
+            "message":       "Percentile-based multi-factor risk classification ✅",
             "total_records": len(valid_data),
-            "results":       results,
+            "distribution":  dict(dist),
+            "thresholds":    {
+                "low_max":    round(low_threshold, 2),
+                "medium_max": round(medium_threshold, 2),
+            },
+            "results": results,
         }
 
     except Exception as e:
