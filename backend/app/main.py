@@ -509,230 +509,163 @@ def classify_risk_xgb(
     user: dict = Depends(require_role(["admin", "analyst", "auditor"]))
 ):
     try:
+        # 🔹 Get logged-in user
         current_user = users_collection.find_one({"username": user["sub"]})
+
         if not current_user:
             raise HTTPException(status_code=404, detail="User not found ❌")
 
         user_id = str(current_user["_id"])
-        data = list(financial_collection.find({"user_id": user_id}))
+
+        # 🔹 Get financial data
+        data = list(financial_collection.find({
+            "user_id": user_id
+        }))
 
         if not data:
-            return {"message": "No financial data uploaded yet", "total_records": 0, "results": []}
+            return {
+                "message": "No financial data uploaded yet",
+                "total_records": 0,
+                "results": []
+            }
 
-        # -------- Feature Extraction --------
+        # 🔹 Prepare valid data
         valid_data = []
 
         for record in data:
             try:
-                revenue  = float(record.get("revenue", 0))
-                expenses = float(record.get("expenses", 0))
-                debt     = float(record.get("debt", 0))
-
-                if revenue <= 0:
-                    continue
-
-                net_profit      = revenue - expenses
-                profit_margin   = net_profit / revenue
-                expense_ratio   = expenses / revenue
-                debt_to_revenue = debt / revenue
-
+                revenue = float(record.get("revenue", 0))
                 valid_data.append({
-                    "_id":             record["_id"],
-                    "revenue":         revenue,
-                    "expenses":        expenses,
-                    "debt":            debt,
-                    "net_profit":      net_profit,
-                    "profit_margin":   profit_margin,
-                    "expense_ratio":   expense_ratio,
-                    "debt_to_revenue": debt_to_revenue,
+                    "_id": record["_id"],
+                    "revenue": revenue
                 })
-            except Exception:
+            except:
                 continue
 
+        # 🔥 IMPORTANT FIX: allow small dataset
         if len(valid_data) < 2:
-            return {"message": "Not enough valid data", "total_records": len(valid_data), "results": []}
+            return {
+                "message": "Not enough data, assigning default risk",
+                "total_records": len(valid_data),
+                "results": []
+            }
 
-        # -------- Percentile-Based Scoring (relative ranking) --------
-        # This ensures realistic distribution across Low / Medium / High
-        # even when all records look "similar" in absolute terms
+        # -------- Feature Matrix --------
+        revenues = np.array(
+            [d["revenue"] for d in valid_data]
+        ).reshape(-1, 1)
 
-        import numpy as np
+        # -------- Rule-based fallback (ALWAYS WORKS) --------
+        labels = []
+        for r in revenues:
+            value = r[0]
 
-        margins   = np.array([r["profit_margin"]   for r in valid_data])
-        expenses_ = np.array([r["expense_ratio"]    for r in valid_data])
-        debts     = np.array([r["debt_to_revenue"]  for r in valid_data])
-
-        def percentile_rank(value, array):
-            """Returns 0–100: how risky this value is relative to peers."""
-            return float(np.sum(array <= value) / len(array) * 100)
-
-        def compute_risk_score(record, margins_arr, expenses_arr, debts_arr):
-            pm = record["profit_margin"]
-            er = record["expense_ratio"]
-            dr = record["debt_to_revenue"]
-
-            # Higher margin = LOWER risk → invert percentile
-            margin_risk  = 100 - percentile_rank(pm, margins_arr)   # best margin → 0 risk
-            expense_risk = percentile_rank(er, expenses_arr)         # highest expense → 100 risk
-            debt_risk    = percentile_rank(dr, debts_arr)            # most debt → 100 risk
-
-            # Weighted composite (matches real-world credit scoring weights)
-            # Profit margin:   40%
-            # Expense ratio:   35%
-            # Debt ratio:      25%
-            composite = (
-                margin_risk  * 0.40 +
-                expense_risk * 0.35 +
-                debt_risk    * 0.25
-            )
-
-            # ---- Absolute penalty on top (catches genuinely bad records) ----
-            penalty = 0
-
-            if pm < 0:           penalty += 20   # loss-making
-            if pm < -0.20:       penalty += 15   # heavy loss
-            if er > 1.0:         penalty += 20   # spending > earning
-            if dr > 1.5:         penalty += 15   # debt > 1.5x revenue
-
-            return round(composite + penalty, 2)
-
-        # -------- Label Assignment --------
-        # Bottom 40% → Low, next 35% → Medium, top 25% → High
-        # This guarantees meaningful distribution across all datasets
-
-        scores = []
-        for record in valid_data:
-            s = compute_risk_score(record, margins, expenses_, debts)
-            scores.append(s)
-
-        scores_arr = np.array(scores)
-
-        low_threshold    = float(np.percentile(scores_arr, 40))   # bottom 40% = Low
-        medium_threshold = float(np.percentile(scores_arr, 75))   # next 35% = Medium
-                                                                   # top 25% = High
-
-        def score_to_label(score):
-            if score <= low_threshold:
-                return "Low"
-            elif score <= medium_threshold:
-                return "Medium"
+            if value < 1000:
+                labels.append("Low")
+            elif value < 5000:
+                labels.append("Medium")
             else:
-                return "High"
+                labels.append("High")
 
-        # -------- Apply + Save --------
+        # 🔥 If dataset small → skip ML and directly assign
+        if len(valid_data) < 10:
+
+            for i, record in enumerate(valid_data):
+                financial_collection.update_one(
+                    {"_id": record["_id"]},
+                    {"$set": {"risk_level": labels[i]}}
+                )
+
+            return {
+                "message": "Rule-based risk assigned ✅",
+                "total_records": len(valid_data),
+                "results": labels
+            }
+
+        # -------- ML PART --------
+        encoder = LabelEncoder()
+        y = encoder.fit_transform(labels)
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            revenues,
+            y,
+            test_size=0.2,
+            random_state=42
+        )
+
+        model = XGBClassifier(
+            n_estimators=100,
+            max_depth=3,
+            learning_rate=0.1,
+            random_state=42,
+            eval_metric="mlogloss"
+        )
+
+        model.fit(X_train, y_train)
+
+        # -------- Evaluate --------
+        y_pred = model.predict(X_test)
+        accuracy = accuracy_score(y_test, y_pred)
+
+        # -------- Predict --------
+        predictions = model.predict(revenues)
+
         results = []
 
         for i, record in enumerate(valid_data):
-            score      = scores[i]
-            risk_label = score_to_label(score)
 
+            risk_label = encoder.inverse_transform([predictions[i]])[0]
+
+            # 🔹 SAVE TO DB (CRITICAL)
             financial_collection.update_one(
                 {"_id": record["_id"]},
-                {"$set": {
-                    "risk_level":       risk_label,
-                    "risk_score":       score,
-                    "profit_margin":    round(record["profit_margin"], 4),
-                    "expense_ratio":    round(record["expense_ratio"], 4),
-                    "debt_to_revenue":  round(record["debt_to_revenue"], 4),
-                    "classified_by":    "rule_percentile",
-                }}
+                {"$set": {"risk_level": risk_label}}
             )
 
             results.append({
-                "id":              str(record["_id"]),
-                "revenue":         record["revenue"],
-                "expenses":        record["expenses"],
-                "net_profit":      round(record["net_profit"], 2),
-                "profit_margin":   f"{round(record['profit_margin'] * 100, 1)}%",
-                "expense_ratio":   f"{round(record['expense_ratio'] * 100, 1)}%",
-                "debt_to_revenue": f"{round(record['debt_to_revenue'] * 100, 1)}%",
-                "risk_score":      score,
-                "risk":            risk_label,
+                "id": str(record["_id"]),
+                "revenue": record["revenue"],
+                "risk": risk_label
             })
 
-        # -------- XGBoost ML Layer (10+ records) --------
-        if len(valid_data) >= 10:
-            try:
-                feature_matrix = np.array([
-                    [r["profit_margin"], r["expense_ratio"], r["debt_to_revenue"]]
-                    for r in valid_data
-                ])
-                labels = [r["risk"] for r in results]
-
-                encoder = LabelEncoder()
-                y = encoder.fit_transform(labels)
-
-                # Need at least 2 classes for XGBoost to work
-                if len(set(labels)) >= 2:
-                    X_train, X_test, y_train, y_test = train_test_split(
-                        feature_matrix, y, test_size=0.2, random_state=42,
-                        stratify=y   # ensures all classes appear in train/test
-                    )
-
-                    model = XGBClassifier(
-                        n_estimators=100,
-                        max_depth=3,
-                        learning_rate=0.1,
-                        random_state=42,
-                        eval_metric="mlogloss"
-                    )
-                    model.fit(X_train, y_train)
-
-                    y_pred    = model.predict(X_test)
-                    accuracy  = accuracy_score(y_test, y_pred)
-                    ml_preds  = encoder.inverse_transform(model.predict(feature_matrix))
-
-                    for i, record in enumerate(valid_data):
-                        ml_risk = ml_preds[i]
-                        financial_collection.update_one(
-                            {"_id": record["_id"]},
-                            {"$set": {
-                                "risk_level":    ml_risk,
-                                "classified_by": "xgboost"
-                            }}
-                        )
-                        results[i]["risk"]          = ml_risk
-                        results[i]["classified_by"] = "xgboost"
-
-                    # ---- Distribution summary ----
-                    from collections import Counter
-                    dist = Counter(r["risk"] for r in results)
-
-                    joblib.dump(model, "xgb_risk_model.pkl")
-
-                    return {
-                        "message":       "XGBoost multi-factor risk classification ✅",
-                        "accuracy":      round(float(accuracy), 4),
-                        "total_records": len(valid_data),
-                        "distribution":  dict(dist),   # e.g. {"Low": 200, "Medium": 175, "High": 125}
-                        "thresholds":    {
-                            "low_max":    round(low_threshold, 2),
-                            "medium_max": round(medium_threshold, 2),
-                        },
-                        "results": results,
-                    }
-
-            except Exception as ml_err:
-                # ML failed → fall through to rule-based result
-                print(f"XGBoost failed, using rule-based: {ml_err}")
-
-        from collections import Counter
-        dist = Counter(r["risk"] for r in results)
+        # 🔹 Save model (optional)
+        joblib.dump(model, "xgb_risk_model.pkl")
 
         return {
-            "message":       "Percentile-based multi-factor risk classification ✅",
+            "message": "XGBoost risk classification completed ✅",
+            "accuracy": round(float(accuracy), 4),
             "total_records": len(valid_data),
-            "distribution":  dict(dist),
-            "thresholds":    {
-                "low_max":    round(low_threshold, 2),
-                "medium_max": round(medium_threshold, 2),
-            },
-            "results": results,
+            "results": results
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Risk classification failed: {str(e)}")
-    
+        raise HTTPException(
+            status_code=500,
+            detail=f"Risk classification failed: {str(e)}"
+        )
+
+def run_risk_classification(user):
+
+    current_user = users_collection.find_one({"username": user["sub"]})
+    user_id = str(current_user["_id"])
+
+    data = list(financial_collection.find({"user_id": user_id}))
+
+    for record in data:
+        revenue = float(record.get("revenue", 0))
+
+        if revenue < 1000:
+            risk = "Low"
+        elif revenue < 5000:
+            risk = "Medium"
+        else:
+            risk = "High"
+
+        financial_collection.update_one(
+            {"_id": record["_id"]},
+            {"$set": {"risk_level": risk}}
+        )
+
 # ---------------- HASH ML RESULTS ----------------
 
 @app.get("/hash-ml-results")
